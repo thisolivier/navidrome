@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func deleteSong(ds model.DataStore, maintenance core.Maintenance) http.HandlerFu
 			trashFilename := fmt.Sprintf("%s_%s", timestamp, originalFilename)
 			trashedPath = filepath.Join(trashDir, trashFilename)
 
-			if err := os.Rename(absFilePath, trashedPath); err != nil {
+			if err := moveFile(absFilePath, trashedPath); err != nil {
 				log.Error(ctx, "Error moving file to trash", "from", absFilePath, "to", trashedPath, err)
 				http.Error(responseWriter, "failed to move file to trash", http.StatusInternalServerError)
 				return
@@ -95,10 +96,16 @@ func deleteSong(ds model.DataStore, maintenance core.Maintenance) http.HandlerFu
 			return
 		}
 
-		// 6. Purge DB record via maintenance service (handles transaction + GC + stat refresh)
+		// 6. Mark as missing in DB, then purge via maintenance (handles GC + stat refresh)
 		if maintenance == nil {
 			log.Error(ctx, "Maintenance service not configured")
 			http.Error(responseWriter, "maintenance service not available", http.StatusInternalServerError)
+			return
+		}
+		// Mark the record as missing first — DeleteMissingFiles requires missing=true
+		if err := ds.MediaFile(ctx).MarkMissing(true, mediaFile); err != nil {
+			log.Error(ctx, "Error marking media file as missing", "id", id, err)
+			http.Error(responseWriter, "file moved to trash but failed to mark as missing", http.StatusInternalServerError)
 			return
 		}
 		if err := maintenance.DeleteMissingFiles(ctx, []string{id}); err != nil {
@@ -117,4 +124,33 @@ func deleteSong(ds model.DataStore, maintenance core.Maintenance) http.HandlerFu
 		responseWriter.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(responseWriter).Encode(resp)
 	}
+}
+
+// moveFile moves a file from src to dst. Falls back to copy+delete if os.Rename
+// fails (e.g. cross-device moves where src and dst are on different filesystems).
+func moveFile(sourcePath, destPath string) error {
+	if err := os.Rename(sourcePath, destPath); err == nil {
+		return nil
+	}
+	// Fallback: copy then delete (handles cross-device / cross-volume moves)
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create dest: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		os.Remove(destPath) // clean up partial copy
+		return fmt.Errorf("copy: %w", err)
+	}
+	if err := destFile.Close(); err != nil {
+		return fmt.Errorf("close dest: %w", err)
+	}
+	return os.Remove(sourcePath)
 }

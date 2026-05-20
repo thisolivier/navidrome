@@ -83,7 +83,7 @@ var _ = Describe("Song Delete Endpoint", func() {
 			ID:          "user-1",
 			UserName:    "testuser",
 			Name:        "Test User",
-			IsAdmin:     false,
+			IsAdmin:     true,
 			NewPassword: "testpass",
 		}
 		err = userRepo.Put(&testUser)
@@ -96,7 +96,7 @@ var _ = Describe("Song Delete Endpoint", func() {
 
 	createAuthenticatedRequest := func(method, path string) *http.Request {
 		request := httptest.NewRequest(method, path, strings.NewReader(""))
-		testUser := model.User{ID: "user-1", UserName: "testuser"}
+		testUser := model.User{ID: "user-1", UserName: "testuser", IsAdmin: true}
 		token, err := auth.CreateToken(&testUser)
 		Expect(err).ToNot(HaveOccurred())
 		request.Header.Set(consts.UIAuthorizationHeader, "Bearer "+token)

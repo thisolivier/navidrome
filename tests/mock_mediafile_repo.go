@@ -206,6 +206,30 @@ func (m *MockMediaFileRepo) CountAll(opts ...model.QueryOptions) (int64, error) 
 	return int64(len(m.Data)), nil
 }
 
+func (m *MockMediaFileRepo) MarkMissing(missing bool, mfs ...*model.MediaFile) error {
+	if m.Err {
+		return errors.New("error")
+	}
+	for _, mf := range mfs {
+		if d, ok := m.Data[mf.ID]; ok {
+			d.Missing = missing
+		}
+	}
+	return nil
+}
+
+func (m *MockMediaFileRepo) DeleteMissing(ids []string) error {
+	if m.Err {
+		return errors.New("error")
+	}
+	for _, mfID := range ids {
+		if d, ok := m.Data[mfID]; ok && d.Missing {
+			delete(m.Data, mfID)
+		}
+	}
+	return nil
+}
+
 func (m *MockMediaFileRepo) DeleteAllMissing() (int64, error) {
 	if m.Err {
 		return 0, errors.New("error")
