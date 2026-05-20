@@ -31,6 +31,7 @@ type configOptions struct {
 	UnixSocketPerm                  string
 	EnforceNonRootUser              bool
 	MusicFolder                     string
+	TrashDirectory                  string
 	DataFolder                      Dir
 	CacheFolder                     Dir
 	DbPath                          string

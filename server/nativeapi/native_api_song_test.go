@@ -247,12 +247,14 @@ var _ = Describe("Song Endpoints", func() {
 		})
 
 		Context("DELETE /song/{id}", func() {
-			It("should not be available (songs are not persistable)", func() {
+			It("is handled by the custom song delete endpoint", func() {
 				req := createAuthenticatedRequest("DELETE", "/song/song-1", nil)
 				router.ServeHTTP(w, req)
 
-				// Should return 405 Method Not Allowed or 404 Not Found
-				Expect(w.Code).To(Equal(http.StatusMethodNotAllowed))
+				// The custom song delete endpoint handles this route.
+				// Without a configured maintenance service, it returns 500.
+				// Full deletion tests are in song_delete_test.go.
+				Expect(w.Code).To(Equal(http.StatusInternalServerError))
 			})
 		})
 	})
