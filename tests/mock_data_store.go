@@ -125,6 +125,10 @@ func (db *MockDataStore) Playlist(ctx context.Context) model.PlaylistRepository 
 	return db.MockedPlaylist
 }
 
+func (db *MockDataStore) PlaylistFolder(_ context.Context) model.PlaylistFolderRepository {
+	return nil
+}
+
 func (db *MockDataStore) PlayQueue(ctx context.Context) model.PlayQueueRepository {
 	if db.MockedPlayQueue != nil {
 		return db.MockedPlayQueue
