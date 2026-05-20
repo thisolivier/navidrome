@@ -77,6 +77,7 @@ func (api *Router) routes() http.Handler {
 			api.RX(r, "/share", api.share.NewRepository, true)
 		}
 
+		api.addPlaylistFolderRoute(r)
 		api.addPlaylistRoute(r)
 		api.addPlaylistTrackRoute(r)
 		api.addSongPlaylistsRoute(r)

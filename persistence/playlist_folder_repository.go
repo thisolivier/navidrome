@@ -159,4 +159,22 @@ func (r *playlistFolderRepository) NewInstance() any {
 	return &model.PlaylistFolder{}
 }
 
+// rest.Persistable implementation
+
+func (r *playlistFolderRepository) Save(entity any) (string, error) {
+	folder := entity.(*model.PlaylistFolder)
+	err := r.Put(folder)
+	if err != nil {
+		return "", err
+	}
+	return folder.ID, nil
+}
+
+func (r *playlistFolderRepository) Update(id string, entity any, cols ...string) error {
+	folder := entity.(*model.PlaylistFolder)
+	folder.ID = id
+	return r.Put(folder)
+}
+
+var _ rest.Persistable = (*playlistFolderRepository)(nil)
 var _ model.PlaylistFolderRepository = (*playlistFolderRepository)(nil)
