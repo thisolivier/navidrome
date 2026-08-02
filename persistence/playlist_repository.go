@@ -94,6 +94,24 @@ func (r *playlistRepository) Exists(id string) (bool, error) {
 }
 
 func (r *playlistRepository) Delete(id string) error {
+	// Only clean up memberships for a playlist this caller can actually see.
+	// If it is missing or not visible, fall through unchanged so the existing
+	// return behaviour of this method is preserved.
+	if _, err := r.Get(id); err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return r.delete(And{Eq{"id": id}, r.userFilter()})
+		}
+		return err
+	}
+
+	// Drop folder memberships explicitly rather than relying on the schema's
+	// ON DELETE CASCADE, which SQLite applies per connection and which is not
+	// enabled on every connection in the pool. See playlistFolderRepository.Delete.
+	clearMemberships := Delete("playlist_folder_membership").Where(Eq{"playlist_id": id})
+	if _, err := r.executeSQL(clearMemberships); err != nil {
+		return err
+	}
+
 	return r.delete(And{Eq{"id": id}, r.userFilter()})
 }
 

@@ -221,7 +221,7 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			Expect(rootIDs).To(ContainElements(child1.ID, child2.ID))
 		})
 
-		It("removes memberships when folder is deleted (FK CASCADE)", func() {
+		It("removes memberships when folder is deleted", func() {
 			folder := &model.PlaylistFolder{Name: "Folder With Memberships"}
 			Expect(repo.Put(folder)).To(Succeed())
 
@@ -513,6 +513,106 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			playlistIDs, err := repo.GetPlaylistIDs(folder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(playlistIDs).To(HaveLen(0))
+		})
+	})
+
+	Describe("Membership cleanup on delete", func() {
+		var playlistRepo model.PlaylistRepository
+
+		BeforeEach(func() {
+			ctx := log.NewContext(GinkgoT().Context())
+			ctx = request.WithUser(ctx, adminUser)
+			playlistRepo = NewPlaylistRepository(ctx, GetDBXBuilder())
+		})
+
+		It("keeps a playlist in its other folders when one of them is deleted", func() {
+			genre := &model.PlaylistFolder{Name: "Genre"}
+			travel := &model.PlaylistFolder{Name: "Travel"}
+			favourites := &model.PlaylistFolder{Name: "Favourites"}
+			Expect(repo.Put(genre)).To(Succeed())
+			Expect(repo.Put(travel)).To(Succeed())
+			Expect(repo.Put(favourites)).To(Succeed())
+			trackFolder(travel)
+			trackFolder(favourites)
+
+			Expect(repo.AddPlaylist(genre.ID, plsBest.ID)).To(Succeed())
+			Expect(repo.AddPlaylist(travel.ID, plsBest.ID)).To(Succeed())
+			Expect(repo.AddPlaylist(favourites.ID, plsBest.ID)).To(Succeed())
+
+			Expect(repo.Delete(genre.ID)).To(Succeed())
+
+			// The deleted folder's membership is gone, so no dangling reference remains
+			folders, err := repo.GetPlaylistFolders(plsBest.ID)
+			Expect(err).ToNot(HaveOccurred())
+			folderIDs := make([]string, len(folders))
+			for idx, folder := range folders {
+				folderIDs[idx] = folder.ID
+			}
+			Expect(folderIDs).ToNot(ContainElement(genre.ID))
+
+			// ...and the playlist still belongs to the folders that survive
+			Expect(folderIDs).To(ContainElements(travel.ID, favourites.ID))
+		})
+
+		It("returns a playlist to the root when its only folder is deleted", func() {
+			only := &model.PlaylistFolder{Name: "Only Home"}
+			Expect(repo.Put(only)).To(Succeed())
+
+			Expect(repo.AddPlaylist(only.ID, plsBest.ID)).To(Succeed())
+			Expect(repo.Delete(only.ID)).To(Succeed())
+
+			// No memberships left means top-level, rather than stranded in a
+			// folder that no longer exists
+			folders, err := repo.GetPlaylistFolders(plsBest.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(folders).To(HaveLen(0))
+		})
+
+		It("removes memberships when the playlist itself is deleted", func() {
+			folder := &model.PlaylistFolder{Name: "Holds Doomed Playlist"}
+			Expect(repo.Put(folder)).To(Succeed())
+			trackFolder(folder)
+
+			doomed := &model.Playlist{Name: "Doomed", OwnerID: adminUser.ID, OwnerName: adminUser.UserName}
+			Expect(playlistRepo.Put(doomed)).To(Succeed())
+			Expect(repo.AddPlaylist(folder.ID, doomed.ID)).To(Succeed())
+
+			Expect(playlistRepo.Delete(doomed.ID)).To(Succeed())
+
+			// The folder must not keep reporting a playlist that no longer exists
+			playlistIDs, err := repo.GetPlaylistIDs(folder.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(playlistIDs).ToNot(ContainElement(doomed.ID))
+		})
+
+		It("does not touch another user's folder contents on a failed delete", func() {
+			ctx := log.NewContext(GinkgoT().Context())
+			ctx = request.WithUser(ctx, regularUser)
+			regularRepo := NewPlaylistFolderRepository(ctx, GetDBXBuilder())
+
+			parent := &model.PlaylistFolder{Name: "Admin Parent"}
+			Expect(repo.Put(parent)).To(Succeed())
+			trackFolder(parent)
+			child := &model.PlaylistFolder{Name: "Admin Child", ParentID: parent.ID}
+			Expect(repo.Put(child)).To(Succeed())
+			trackFolder(child)
+			Expect(repo.AddPlaylist(parent.ID, plsBest.ID)).To(Succeed())
+
+			// Not the owner: the delete reports success (it matched nothing) but
+			// must leave the folder and everything hanging off it untouched
+			Expect(regularRepo.Delete(parent.ID)).To(Succeed())
+
+			retrievedParent, err := repo.Get(parent.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(retrievedParent.Name).To(Equal("Admin Parent"))
+
+			retrievedChild, err := repo.Get(child.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(retrievedChild.ParentID).To(Equal(parent.ID), "child was re-parented by a non-owner")
+
+			playlistIDs, err := repo.GetPlaylistIDs(parent.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(playlistIDs).To(ContainElement(plsBest.ID), "memberships were cleared by a non-owner")
 		})
 	})
 })

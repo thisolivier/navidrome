@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	. "github.com/Masterminds/squirrel"
@@ -88,12 +89,35 @@ func (r *playlistFolderRepository) GetChildren(parentID string) (model.PlaylistF
 }
 
 func (r *playlistFolderRepository) Delete(id string) error {
-	// Promote children to root before deleting
-	promote := Update(r.tableName).Set("parent_id", "").Where(Eq{"parent_id": id})
-	_, err := r.executeSQL(promote)
-	if err != nil {
+	// Check ownership up front. delete() reports no error when it matches zero
+	// rows, so it cannot guard the cleanup below: without this, a user could
+	// re-parent another user's child folders by deleting a folder they do not own.
+	if _, err := r.Get(id); err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			// Missing, or not visible to this caller. There is nothing to clean
+			// up and the scoped delete below would match nothing, so report
+			// success as this method always has for a delete that hits no rows.
+			return nil
+		}
 		return err
 	}
+
+	// Promote children to root rather than deleting the subtree
+	promote := Update(r.tableName).Set("parent_id", "").Where(Eq{"parent_id": id})
+	if _, err := r.executeSQL(promote); err != nil {
+		return err
+	}
+
+	// Drop this folder's playlist memberships explicitly. The schema declares
+	// ON DELETE CASCADE, but SQLite enforces foreign keys per connection and the
+	// pragma is not applied to every connection in the pool, so the cascade
+	// cannot be relied on at runtime. Leaving the rows behind would strand a
+	// playlist: still holding a membership, but to a folder that no longer exists.
+	clearMemberships := Delete("playlist_folder_membership").Where(Eq{"folder_id": id})
+	if _, err := r.executeSQL(clearMemberships); err != nil {
+		return err
+	}
+
 	return r.delete(And{Eq{"id": id}, r.ownerFilter()})
 }
 
