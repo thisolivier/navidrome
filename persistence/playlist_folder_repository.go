@@ -94,10 +94,12 @@ func (r *playlistFolderRepository) Delete(id string) error {
 	// re-parent another user's child folders by deleting a folder they do not own.
 	if _, err := r.Get(id); err != nil {
 		if errors.Is(err, model.ErrNotFound) {
-			// Missing, or not visible to this caller. There is nothing to clean
-			// up and the scoped delete below would match nothing, so report
-			// success as this method always has for a delete that hits no rows.
-			return nil
+			// Missing, or not visible to this caller: both are reported as "not
+			// found" so the endpoint never confirms the existence of another
+			// user's folder. Translated to rest.ErrNotFound because the REST
+			// controller matches that value by identity to return 404; the model
+			// error would fall through to a 500. Same approach as playerRepository.
+			return rest.ErrNotFound
 		}
 		return err
 	}

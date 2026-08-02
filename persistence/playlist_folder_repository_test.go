@@ -3,6 +3,7 @@ package persistence
 import (
 	"time"
 
+	"github.com/deluan/rest"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/request"
@@ -96,9 +97,10 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			Expect(err).To(MatchError(model.ErrNotFound))
 		})
 
-		It("deleting a non-existent folder does not error", func() {
-			// DELETE with no matching rows succeeds silently in the base repository
-			Expect(repo.Delete("non-existent-id")).To(Succeed())
+		It("deleting a non-existent folder reports not found", func() {
+			// rest.ErrNotFound rather than model.ErrNotFound: the REST controller
+			// matches that value by identity to return 404
+			Expect(repo.Delete("non-existent-id")).To(MatchError(rest.ErrNotFound))
 		})
 	})
 
@@ -598,9 +600,9 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			trackFolder(child)
 			Expect(repo.AddPlaylist(parent.ID, plsBest.ID)).To(Succeed())
 
-			// Not the owner: the delete reports success (it matched nothing) but
-			// must leave the folder and everything hanging off it untouched
-			Expect(regularRepo.Delete(parent.ID)).To(Succeed())
+			// Not the owner: reported as not found, and nothing hanging off the
+			// folder may be touched
+			Expect(regularRepo.Delete(parent.ID)).To(MatchError(rest.ErrNotFound))
 
 			retrievedParent, err := repo.Get(parent.ID)
 			Expect(err).ToNot(HaveOccurred())
