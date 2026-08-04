@@ -13,10 +13,11 @@ func init() {
 
 // upAddPlaylistFolders creates the per-user playlist organization schema.
 //
-//   - playlist_folder holds the folder tree. parent_id is '' for a root folder.
+//   - playlist_folder holds the folder tree. parent_id is the empty string for a root folder.
 //     sort_order is nullable: NULL means "unordered", which clients sort after ordered siblings.
 //   - playlist_placement records that a playlist appears in a folder for one user.
-//     folder_id is '' for an explicit root placement, so it cannot carry a foreign key.
+//     folder_id is the empty string for an explicit root placement, so it cannot carry a
+//     foreign key.
 //     A playlist with no placement rows is implicitly at the root, unordered.
 //
 // The foreign keys below document intent only. SQLite applies PRAGMA foreign_keys per

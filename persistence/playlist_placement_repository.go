@@ -12,10 +12,16 @@ import (
 
 var placementColumns = []string{"user_id", "playlist_id", "folder_id", "sort_order"}
 
+// GetPlacements returns this user's placements. Placements of playlists that no longer
+// exist are filtered out as defence in depth: the playlist repository deletes them, but a
+// bypassed cleanup must never surface an orphan to a client. Still a single query.
 func (r *playlistFolderRepository) GetPlacements() (model.PlaylistPlacements, error) {
 	selectPlacements := Select(placementColumns...).
 		From(playlistPlacementTableName).
-		Where(Eq{"user_id": r.currentUserID()})
+		Where(And{
+			Eq{"user_id": r.currentUserID()},
+			Exists("playlist", Expr("playlist.id = "+playlistPlacementTableName+".playlist_id")),
+		})
 	placements := model.PlaylistPlacements{}
 	err := r.queryAll(selectPlacements, &placements)
 	if err != nil {
@@ -41,21 +47,29 @@ func (r *playlistFolderRepository) DeletePlacement(playlistID, folderID string) 
 
 // SetPlacements makes the supplied list the complete set of placements this user has for
 // the playlist. An empty list returns the playlist to the implicit root.
+//
+// The supplied placements are written first and the superseded ones are pruned afterwards,
+// so at no point does the playlist hold fewer placements than both the old and the new
+// state. A failure part-way through can leave extra placements, never a wiped tree, which
+// matters because these repositories run outside a transaction.
 func (r *playlistFolderRepository) SetPlacements(playlistID string, placements model.PlaylistPlacements) error {
-	deleteExisting := Delete(playlistPlacementTableName).Where(And{
-		Eq{"user_id": r.currentUserID()},
-		Eq{"playlist_id": playlistID},
-	})
-	if _, err := r.executeSQL(deleteExisting); err != nil {
-		return err
-	}
+	suppliedFolderIDs := make([]string, 0, len(placements))
 	for _, placement := range placements {
 		placement.PlaylistID = playlistID
 		if _, err := r.executeSQL(r.insertPlacement(placement)); err != nil {
 			return err
 		}
+		suppliedFolderIDs = append(suppliedFolderIDs, placement.FolderID)
 	}
-	return nil
+
+	// NotEq with an empty slice is always true, so an empty list removes every placement.
+	pruneSuperseded := Delete(playlistPlacementTableName).Where(And{
+		Eq{"user_id": r.currentUserID()},
+		Eq{"playlist_id": playlistID},
+		NotEq{"folder_id": suppliedFolderIDs},
+	})
+	_, err := r.executeSQL(pruneSuperseded)
+	return err
 }
 
 // insertPlacement upserts a single placement row for the current user.

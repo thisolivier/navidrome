@@ -3,11 +3,13 @@ package persistence
 import (
 	"time"
 
+	"github.com/navidrome/navidrome/db"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/request"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pocketbase/dbx"
 )
 
 func intPointer(value int) *int {
@@ -311,6 +313,30 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			Expect(*placements[0].SortOrder).To(Equal(5))
 		})
 
+		It("SetPlacements keeps an overlapping placement and updates its sort order", func() {
+			keptFolder := createFolder("Kept", "")
+			droppedFolder := createFolder("Dropped", "")
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: keptFolder.ID, SortOrder: intPointer(1),
+			})).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: droppedFolder.ID,
+			})).To(Succeed())
+
+			Expect(repo.SetPlacements(plsBest.ID, model.PlaylistPlacements{
+				{FolderID: keptFolder.ID, SortOrder: intPointer(6)},
+				{FolderID: model.PlaylistFolderRootID, SortOrder: intPointer(2)},
+			})).To(Succeed())
+
+			sortOrderByFolderID := map[string]int{}
+			for _, placement := range placementsFor(repo, plsBest.ID) {
+				sortOrderByFolderID[placement.FolderID] = *placement.SortOrder
+			}
+			Expect(sortOrderByFolderID).To(HaveLen(2))
+			Expect(sortOrderByFolderID[keptFolder.ID]).To(Equal(6))
+			Expect(sortOrderByFolderID[model.PlaylistFolderRootID]).To(Equal(2))
+		})
+
 		It("SetPlacements with an empty list unfiles the playlist", func() {
 			folder := createFolder("Set Empty", "")
 			Expect(repo.PutPlacement(model.PlaylistPlacement{PlaylistID: plsBest.ID, FolderID: folder.ID})).To(Succeed())
@@ -347,6 +373,101 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			Expect(repo.SetPlacements(plsCool.ID, model.PlaylistPlacements{})).To(Succeed())
 
 			Expect(placementsFor(regularUserRepo, plsCool.ID)).To(HaveLen(1))
+		})
+	})
+
+	Describe("Playlist lifecycle", func() {
+		var playlistRepo model.PlaylistRepository
+
+		countPlacementRows := func(playlistID string) int {
+			var rowCount int
+			err := GetDBXBuilder().
+				NewQuery("select count(*) from playlist_placement where playlist_id = {:playlistID}").
+				Bind(dbx.Params{"playlistID": playlistID}).
+				Row(&rowCount)
+			Expect(err).ToNot(HaveOccurred())
+			return rowCount
+		}
+
+		// plantOrphanPlacement writes a placement for a playlist that does not exist. The test
+		// database enables PRAGMA foreign_keys, so it takes a dedicated connection with the
+		// pragma turned off — which is exactly the state a production connection may be in.
+		plantOrphanPlacement := func(playlistID string) {
+			ctx := GinkgoT().Context()
+			connection, err := db.Db().Conn(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			defer func() { Expect(connection.Close()).To(Succeed()) }()
+
+			_, err = connection.ExecContext(ctx, "PRAGMA foreign_keys=off")
+			Expect(err).ToNot(HaveOccurred())
+			_, err = connection.ExecContext(ctx,
+				"insert into playlist_placement (user_id, playlist_id, folder_id, sort_order) values (?, ?, '', null)",
+				adminUser.ID, playlistID)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = connection.ExecContext(ctx, "PRAGMA foreign_keys=on")
+			Expect(err).ToNot(HaveOccurred())
+		}
+
+		BeforeEach(func() {
+			ctx := log.NewContext(GinkgoT().Context())
+			ctx = request.WithUser(ctx, adminUser)
+			playlistRepo = NewPlaylistRepository(ctx, GetDBXBuilder())
+		})
+
+		It("removes every user's placements when the playlist is deleted", func() {
+			temporaryPlaylist := model.Playlist{Name: "Temporary", OwnerID: adminUser.ID, OwnerName: adminUser.UserName}
+			Expect(playlistRepo.Put(&temporaryPlaylist)).To(Succeed())
+			folder := createFolder("Holder", "")
+
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: temporaryPlaylist.ID, FolderID: folder.ID,
+			})).To(Succeed())
+			Expect(regularUserRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: temporaryPlaylist.ID, FolderID: model.PlaylistFolderRootID,
+			})).To(Succeed())
+			Expect(countPlacementRows(temporaryPlaylist.ID)).To(Equal(2))
+
+			Expect(playlistRepo.Delete(temporaryPlaylist.ID)).To(Succeed())
+
+			Expect(placementsFor(repo, temporaryPlaylist.ID)).To(BeEmpty())
+			Expect(placementsFor(regularUserRepo, temporaryPlaylist.ID)).To(BeEmpty())
+			// The rows are really gone, not merely filtered out of the read
+			Expect(countPlacementRows(temporaryPlaylist.ID)).To(BeZero())
+		})
+
+		It("keeps placements when the playlist row survives the delete attempt", func() {
+			privatePlaylist := model.Playlist{Name: "Private", OwnerID: adminUser.ID, OwnerName: adminUser.UserName}
+			Expect(playlistRepo.Put(&privatePlaylist)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(playlistRepo.Delete(privatePlaylist.ID)).To(Succeed())
+			})
+			folder := createFolder("Untouched", "")
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: privatePlaylist.ID, FolderID: folder.ID,
+			})).To(Succeed())
+
+			// regularUser cannot delete an admin-owned private playlist, so nothing is removed
+			regularCtx := log.NewContext(GinkgoT().Context())
+			regularCtx = request.WithUser(regularCtx, regularUser)
+			Expect(NewPlaylistRepository(regularCtx, GetDBXBuilder()).Delete(privatePlaylist.ID)).To(Succeed())
+
+			Expect(placementsFor(repo, privatePlaylist.ID)).To(HaveLen(1))
+			Expect(playlistRepo.Exists(privatePlaylist.ID)).To(BeTrue())
+		})
+
+		It("never surfaces a placement of a playlist that does not exist", func() {
+			orphanPlaylistID := "playlist-that-never-existed"
+			plantOrphanPlacement(orphanPlaylistID)
+			DeferCleanup(func() {
+				Expect(repo.DeletePlacement(orphanPlaylistID, model.PlaylistFolderRootID)).To(Succeed())
+			})
+			Expect(countPlacementRows(orphanPlaylistID)).To(Equal(1))
+
+			placements, err := repo.GetPlacements()
+			Expect(err).ToNot(HaveOccurred())
+			for _, placement := range placements {
+				Expect(placement.PlaylistID).ToNot(Equal(orphanPlaylistID))
+			}
 		})
 	})
 

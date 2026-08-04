@@ -94,7 +94,24 @@ func (r *playlistRepository) Exists(id string) (bool, error) {
 }
 
 func (r *playlistRepository) Delete(id string) error {
-	return r.delete(And{Eq{"id": id}, r.userFilter()})
+	err := r.delete(And{Eq{"id": id}, r.userFilter()})
+	if err != nil {
+		return err
+	}
+	return r.deletePlacements(id)
+}
+
+// deletePlacements removes every user's folder placements of a playlist that no longer
+// exists. The cleanup is explicit because SQLite only enforces ON DELETE CASCADE on
+// connections that enabled PRAGMA foreign_keys. The NOT EXISTS guard makes it a no-op while
+// the playlist row is still there, which covers a delete blocked by the user filter.
+func (r *playlistRepository) deletePlacements(playlistID string) error {
+	removePlacements := Delete(playlistPlacementTableName).Where(And{
+		Eq{"playlist_id": playlistID},
+		NotExists("playlist", Eq{"playlist.id": playlistID}),
+	})
+	_, err := r.executeSQL(removePlacements)
+	return err
 }
 
 func (r *playlistRepository) Put(p *model.Playlist, cols ...string) error {
