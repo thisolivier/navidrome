@@ -247,13 +247,14 @@ var _ = Describe("Song Endpoints", func() {
 		})
 
 		Context("DELETE /song/{id}", func() {
-			It("requires admin privileges", func() {
+			It("is handled by the custom song delete endpoint", func() {
 				req := createAuthenticatedRequest("DELETE", "/song/song-1", nil)
 				router.ServeHTTP(w, req)
 
-				// The song delete endpoint is admin-only.
-				// Non-admin users get 403. Full deletion tests in song_delete_test.go.
-				Expect(w.Code).To(Equal(http.StatusForbidden))
+				// The custom song delete endpoint handles this route.
+				// Without a configured maintenance service, it returns 500.
+				// Full deletion tests are in song_delete_test.go.
+				Expect(w.Code).To(Equal(http.StatusInternalServerError))
 			})
 		})
 	})

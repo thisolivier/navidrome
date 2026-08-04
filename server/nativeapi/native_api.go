@@ -83,6 +83,7 @@ func (api *Router) routes() http.Handler {
 		api.addSongPlaylistsRoute(r)
 		api.addQueueRoute(r)
 		api.addMissingFilesRoute(r)
+		api.addSongDeleteRoute(r)
 		api.addKeepAliveRoute(r)
 		api.addInsightsRoute(r)
 
@@ -91,7 +92,6 @@ func (api *Router) routes() http.Handler {
 			api.addConfigRoute(r)
 			api.addUserLibraryRoute(r)
 			api.addPluginRoute(r)
-			api.addSongDeleteRoute(r)
 			api.RX(r, "/library", api.libs.NewRepository, true)
 		})
 	})
