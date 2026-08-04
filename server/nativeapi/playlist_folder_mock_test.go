@@ -108,15 +108,39 @@ func (m *mockPlaylistFolderRepo) Delete(id string) error {
 			candidate.ParentID = folder.ParentID
 		}
 	}
-	remaining := m.placements[:0]
-	for _, placement := range m.placements {
-		if placement.FolderID != id {
-			remaining = append(remaining, placement)
-		}
-	}
-	m.placements = remaining
+	m.placements = promotePlacementsOf(m.placements, id, folder.ParentID)
 	delete(m.folders, id)
 	return nil
+}
+
+// promotePlacementsOf re-homes every placement of a folder into that folder's parent,
+// keeping its sort order. A placement that already exists in the parent wins untouched.
+func promotePlacementsOf(placements []model.PlaylistPlacement, folderID, parentID string) []model.PlaylistPlacement {
+	placementKey := func(placement model.PlaylistPlacement) string {
+		return placement.UserID + "\x00" + placement.PlaylistID + "\x00" + placement.FolderID
+	}
+
+	survivors := make([]model.PlaylistPlacement, 0, len(placements))
+	occupiedKeys := map[string]bool{}
+	for _, placement := range placements {
+		if placement.FolderID != folderID {
+			survivors = append(survivors, placement)
+			occupiedKeys[placementKey(placement)] = true
+		}
+	}
+	for _, placement := range placements {
+		if placement.FolderID != folderID {
+			continue
+		}
+		promoted := placement
+		promoted.FolderID = parentID
+		if occupiedKeys[placementKey(promoted)] {
+			continue
+		}
+		survivors = append(survivors, promoted)
+		occupiedKeys[placementKey(promoted)] = true
+	}
+	return survivors
 }
 
 // --- model.PlaylistFolderRepository: placements ---

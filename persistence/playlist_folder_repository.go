@@ -84,10 +84,15 @@ func (r *playlistFolderRepository) GetChildren(parentID string) (model.PlaylistF
 	return folders, nil
 }
 
-// Delete removes a folder as a pure schema operation: children re-parent to the deleted
-// folder's own parent, the placements it held are released, and playlists are untouched.
-// The placement delete is explicit because SQLite only enforces foreign keys on connections
-// that enabled PRAGMA foreign_keys, which we cannot rely on here.
+// Delete removes a folder as a pure schema operation: everything the folder held moves up
+// one level to the folder's own parent, and playlists are untouched. Children re-parent and
+// placements are re-homed to the same parent, so contents lift together instead of the
+// folders lifting while the playlists drop to the root. When the deleted folder was itself
+// at the root, its placements become explicit root placements and keep their order.
+//
+// The steps are ordered so nothing is lost if a later one fails: the promoted placements are
+// written before the old rows are removed. Placement deletes are explicit because SQLite only
+// enforces foreign keys on connections that enabled PRAGMA foreign_keys.
 func (r *playlistFolderRepository) Delete(id string) error {
 	folder, err := r.Get(id)
 	if err != nil {
@@ -102,12 +107,36 @@ func (r *playlistFolderRepository) Delete(id string) error {
 		return err
 	}
 
-	releasePlacements := Delete(playlistPlacementTableName).Where(Eq{"folder_id": id})
-	if _, err = r.executeSQL(releasePlacements); err != nil {
+	if err = r.promotePlacements(id, folder.ParentID); err != nil {
+		return err
+	}
+
+	removeOldPlacements := Delete(playlistPlacementTableName).Where(Eq{"folder_id": id})
+	if _, err = r.executeSQL(removeOldPlacements); err != nil {
 		return err
 	}
 
 	return r.delete(And{Eq{"id": id}, r.ownerFilter()})
+}
+
+// promotePlacements copies every placement of a folder into the folder's parent, carrying
+// the sort order over as-is. A user that already has the playlist placed in the parent keeps
+// that placement untouched — the existing home wins, so nothing a user arranged is
+// overwritten. Duplicate sort orders among the new siblings are legal.
+func (r *playlistFolderRepository) promotePlacements(folderID, parentID string) error {
+	selectPromoted := Select("user_id", "playlist_id").
+		Column("?", parentID).
+		Column("sort_order").
+		From(playlistPlacementTableName).
+		Where(Eq{"folder_id": folderID})
+
+	promotePlacements := Insert(playlistPlacementTableName).
+		Columns(placementColumns...).
+		Select(selectPromoted).
+		Suffix("on conflict (user_id, playlist_id, folder_id) do nothing")
+
+	_, err := r.executeSQL(promotePlacements)
+	return err
 }
 
 // ResourceRepository (rest.Repository) implementation. No native API route uses these

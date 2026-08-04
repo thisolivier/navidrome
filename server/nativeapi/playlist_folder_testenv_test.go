@@ -76,6 +76,19 @@ func (env *playlistFolderTestEnv) call(method, path string, body ...string) *htt
 	return env.responseWriter
 }
 
+// callWithNilBody issues an authenticated request carrying no request body at all, which is
+// what the iOS client sends when it has no sortOrder to supply.
+func (env *playlistFolderTestEnv) callWithNilBody(method, path string) *httptest.ResponseRecorder {
+	env.responseWriter = httptest.NewRecorder()
+	request := httptest.NewRequest(method, path, nil)
+	token, err := auth.CreateToken(&model.User{ID: testUserID, UserName: "testuser"})
+	Expect(err).ToNot(HaveOccurred())
+	request.Header.Set(consts.UIAuthorizationHeader, "Bearer "+token)
+
+	env.router.ServeHTTP(env.responseWriter, request)
+	return env.responseWriter
+}
+
 func (env *playlistFolderTestEnv) callUnauthenticated(method, path string) *httptest.ResponseRecorder {
 	env.responseWriter = httptest.NewRecorder()
 	env.router.ServeHTTP(env.responseWriter, httptest.NewRequest(method, path, nil))

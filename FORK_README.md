@@ -38,8 +38,11 @@ A per-user organizational layer over playlists, implementing the semantics of
 - `sortOrder` is client-assigned, stored unnormalized, duplicates allowed; sibling folders
   and placements share one ordering space. `NULL` means unordered — clients sort, the server
   only stores.
-- Deleting a folder is a pure schema operation: the folder row goes, its children re-parent
-  to the deleted folder's parent, its placements are released, playlists are never touched.
+- Deleting a folder is a pure schema operation: the folder row goes and everything it held
+  lifts one level to the deleted folder's parent — children re-parent and placements are
+  re-homed, carrying their sort order. If a user already has that playlist placed in the
+  parent, their existing placement wins untouched. Deleting a root folder turns its
+  placements into explicit root placements. Playlists are never touched.
 - Re-parenting a folder under itself or one of its descendants is rejected with HTTP 400.
 - Playlist responses carry no folder fields — `getPlaylists`/`/api/playlist` are unchanged.
 - Placements follow the playlist's lifecycle: deleting a playlist removes every user's
@@ -56,8 +59,8 @@ A per-user organizational layer over playlists, implementing the semantics of
 | GET | `/playlist/folder` | v2 envelope: `{folderApiVersion, folders[], placements[]}` — two queries, no N+1 |
 | POST | `/playlist/folder` | Create. Body `{name, parentId?, sortOrder?}` |
 | PUT | `/playlist/folder/{id}` | Partial update `{name?, parentId?, sortOrder?}`; cycle detection |
-| DELETE | `/playlist/folder/{id}` | Delete folder, re-parent children, release placements |
-| PUT | `/playlist/folder/{id}/playlist/{playlistId}` | Create/update one placement. Body `{sortOrder?}` optional |
+| DELETE | `/playlist/folder/{id}` | Delete folder; children re-parent and placements re-home to its parent |
+| PUT | `/playlist/folder/{id}/playlist/{playlistId}` | Create/update one placement. Body `{sortOrder?}` optional — the request may carry no body at all |
 | DELETE | `/playlist/folder/{id}/playlist/{playlistId}` | Remove one placement (idempotent) |
 | PUT | `/playlist/{playlistId}/placements` | Replace **all** placements of a playlist. Body `{placements:[{folderId, sortOrder?}]}`; empty list unfiles |
 
@@ -73,7 +76,7 @@ cannot be probed.
 | `model/playlist_folder.go` | `PlaylistFolder`, `PlaylistPlacement`, `PlaylistFolderRepository` |
 | `persistence/playlist_folder_repository.go` | Folder CRUD, owner scoping, releasing delete |
 | `persistence/playlist_placement_repository.go` | Placement upsert / delete / set, user scoping |
-| `persistence/playlist_folder_repository_test.go` | 29 Ginkgo specs (schema, ordering, deletion, lifecycle, isolation) |
+| `persistence/playlist_folder_repository_test.go` | 33 Ginkgo specs (schema, ordering, deletion, lifecycle, isolation) |
 | `server/nativeapi/playlist_folders.go` | Routes, tree envelope, folder handlers |
 | `server/nativeapi/playlist_placements.go` | Placement handlers |
 | `server/nativeapi/playlist_folder_support.go` | Response shapes, request decoding, cycle detection |

@@ -200,19 +200,90 @@ var _ = Describe("PlaylistFolderRepository", func() {
 			Expect(retrievedChild.ParentID).To(Equal(""))
 		})
 
-		It("removes the placements the folder held and leaves other placements alone", func() {
-			doomedFolder := &model.PlaylistFolder{Name: "Doomed"}
+		It("promotes the placements it held to its parent, keeping their sort order", func() {
+			parentFolder := createFolder("Parent", "")
+			doomedFolder := &model.PlaylistFolder{Name: "Doomed", ParentID: parentFolder.ID}
 			Expect(repo.Put(doomedFolder)).To(Succeed())
-			survivingFolder := createFolder("Surviving", "")
-
-			Expect(repo.PutPlacement(model.PlaylistPlacement{PlaylistID: plsBest.ID, FolderID: doomedFolder.ID})).To(Succeed())
-			Expect(repo.PutPlacement(model.PlaylistPlacement{PlaylistID: plsBest.ID, FolderID: survivingFolder.ID})).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: doomedFolder.ID, SortOrder: intPointer(4),
+			})).To(Succeed())
 
 			Expect(repo.Delete(doomedFolder.ID)).To(Succeed())
 
 			remaining := placementsFor(repo, plsBest.ID)
 			Expect(remaining).To(HaveLen(1))
-			Expect(remaining[0].FolderID).To(Equal(survivingFolder.ID))
+			Expect(remaining[0].FolderID).To(Equal(parentFolder.ID))
+			Expect(*remaining[0].SortOrder).To(Equal(4))
+		})
+
+		It("promotes the placements of a root folder to explicit root placements", func() {
+			doomedFolder := &model.PlaylistFolder{Name: "Doomed Root"}
+			Expect(repo.Put(doomedFolder)).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: doomedFolder.ID, SortOrder: intPointer(7),
+			})).To(Succeed())
+
+			Expect(repo.Delete(doomedFolder.ID)).To(Succeed())
+
+			remaining := placementsFor(repo, plsBest.ID)
+			Expect(remaining).To(HaveLen(1))
+			Expect(remaining[0].FolderID).To(Equal(model.PlaylistFolderRootID))
+			Expect(*remaining[0].SortOrder).To(Equal(7))
+		})
+
+		It("leaves an existing placement in the parent untouched when promoting", func() {
+			parentFolder := createFolder("Parent", "")
+			doomedFolder := &model.PlaylistFolder{Name: "Doomed", ParentID: parentFolder.ID}
+			Expect(repo.Put(doomedFolder)).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: parentFolder.ID, SortOrder: intPointer(1),
+			})).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: doomedFolder.ID, SortOrder: intPointer(9),
+			})).To(Succeed())
+
+			Expect(repo.Delete(doomedFolder.ID)).To(Succeed())
+
+			remaining := placementsFor(repo, plsBest.ID)
+			Expect(remaining).To(HaveLen(1))
+			Expect(remaining[0].FolderID).To(Equal(parentFolder.ID))
+			Expect(*remaining[0].SortOrder).To(Equal(1))
+		})
+
+		It("leaves placements in other folders alone", func() {
+			doomedFolder := &model.PlaylistFolder{Name: "Doomed"}
+			Expect(repo.Put(doomedFolder)).To(Succeed())
+			survivingFolder := createFolder("Surviving", "")
+
+			Expect(repo.PutPlacement(model.PlaylistPlacement{PlaylistID: plsCool.ID, FolderID: doomedFolder.ID})).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{PlaylistID: plsBest.ID, FolderID: survivingFolder.ID})).To(Succeed())
+
+			Expect(repo.Delete(doomedFolder.ID)).To(Succeed())
+
+			bestPlacements := placementsFor(repo, plsBest.ID)
+			Expect(bestPlacements).To(HaveLen(1))
+			Expect(bestPlacements[0].FolderID).To(Equal(survivingFolder.ID))
+		})
+
+		It("promotes every user's placements, not just the folder owner's", func() {
+			// A folder is private to its owner, so only the owner can hold placements in it.
+			// This guards the promotion query against dropping the user_id it copies.
+			doomedFolder := &model.PlaylistFolder{Name: "Doomed Multi"}
+			Expect(repo.Put(doomedFolder)).To(Succeed())
+			Expect(repo.PutPlacement(model.PlaylistPlacement{PlaylistID: plsBest.ID, FolderID: doomedFolder.ID})).To(Succeed())
+			Expect(regularUserRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: plsBest.ID, FolderID: model.PlaylistFolderRootID, SortOrder: intPointer(3),
+			})).To(Succeed())
+
+			Expect(repo.Delete(doomedFolder.ID)).To(Succeed())
+
+			adminPlacements := placementsFor(repo, plsBest.ID)
+			Expect(adminPlacements).To(HaveLen(1))
+			Expect(adminPlacements[0].FolderID).To(Equal(model.PlaylistFolderRootID))
+
+			regularPlacements := placementsFor(regularUserRepo, plsBest.ID)
+			Expect(regularPlacements).To(HaveLen(1))
+			Expect(*regularPlacements[0].SortOrder).To(Equal(3))
 		})
 
 		It("does NOT delete playlists when a folder is deleted", func() {

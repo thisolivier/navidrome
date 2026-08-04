@@ -226,15 +226,12 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 	})
 
 	Describe("DELETE /playlist/folder/{id}", func() {
-		It("deletes the folder, re-parents children and releases placements", func() {
+		It("deletes the folder and lifts its children and placements to its parent", func() {
 			grandparent := env.seedFolder("Grandparent", "")
 			parent := env.seedFolder("Parent", grandparent.ID)
 			child := env.seedFolder("Child", parent.ID)
 			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
-				PlaylistID: "playlist-1", FolderID: parent.ID,
-			})).To(Succeed())
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
-				PlaylistID: "playlist-1", FolderID: grandparent.ID,
+				PlaylistID: "playlist-1", FolderID: parent.ID, SortOrder: sortOrderPointer(5),
 			})).To(Succeed())
 
 			recorder := env.call("DELETE", "/playlist/folder/"+parent.ID)
@@ -251,6 +248,41 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(placements).To(HaveLen(1))
 			Expect(placements[0].FolderID).To(Equal(grandparent.ID))
+			Expect(*placements[0].SortOrder).To(Equal(5))
+		})
+
+		It("keeps a placement the parent already had when lifting", func() {
+			grandparent := env.seedFolder("Grandparent", "")
+			parent := env.seedFolder("Parent", grandparent.ID)
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-1", FolderID: grandparent.ID, SortOrder: sortOrderPointer(1),
+			})).To(Succeed())
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-1", FolderID: parent.ID, SortOrder: sortOrderPointer(9),
+			})).To(Succeed())
+
+			Expect(env.call("DELETE", "/playlist/folder/"+parent.ID).Code).To(Equal(http.StatusOK))
+
+			placements, err := env.folderRepo.GetPlacements()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(placements).To(HaveLen(1))
+			Expect(placements[0].FolderID).To(Equal(grandparent.ID))
+			Expect(*placements[0].SortOrder).To(Equal(1))
+		})
+
+		It("lifts the placements of a root folder to explicit root placements", func() {
+			folder := env.seedFolder("Root Folder", "")
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-1", FolderID: folder.ID, SortOrder: sortOrderPointer(2),
+			})).To(Succeed())
+
+			Expect(env.call("DELETE", "/playlist/folder/"+folder.ID).Code).To(Equal(http.StatusOK))
+
+			placements, err := env.folderRepo.GetPlacements()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(placements).To(HaveLen(1))
+			Expect(placements[0].FolderID).To(Equal(model.PlaylistFolderRootID))
+			Expect(*placements[0].SortOrder).To(Equal(2))
 		})
 
 		It("returns 404 for an unknown or foreign folder", func() {

@@ -46,14 +46,27 @@ var _ = Describe("Playlist Placement Endpoints", func() {
 			Expect(*stored[0].SortOrder).To(Equal(3))
 		})
 
-		It("creates a placement without a body", func() {
+		It("succeeds when the request carries no body at all", func() {
 			folder := env.seedFolder("Favorites", "")
 
-			Expect(env.call("PUT", "/playlist/folder/"+folder.ID+"/playlist/pls-1").Code).To(Equal(http.StatusOK))
+			recorder := env.callWithNilBody("PUT", "/playlist/folder/"+folder.ID+"/playlist/pls-1")
+			Expect(recorder.Code).To(Equal(http.StatusOK))
 
 			stored := placementsForPlaylist("pls-1")
 			Expect(stored).To(HaveLen(1))
 			Expect(stored[0].SortOrder).To(BeNil())
+		})
+
+		It("succeeds with an empty body or an empty JSON object", func() {
+			folder := env.seedFolder("Favorites", "")
+
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID+"/playlist/pls-1").Code).To(Equal(http.StatusOK))
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID+"/playlist/pls-2", `{}`).Code).To(Equal(http.StatusOK))
+
+			Expect(placementsForPlaylist("pls-1")).To(HaveLen(1))
+			Expect(placementsForPlaylist("pls-1")[0].SortOrder).To(BeNil())
+			Expect(placementsForPlaylist("pls-2")).To(HaveLen(1))
+			Expect(placementsForPlaylist("pls-2")[0].SortOrder).To(BeNil())
 		})
 
 		It("updates the sort order of an existing placement", func() {
