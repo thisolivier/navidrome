@@ -1,136 +1,180 @@
 package nativeapi
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"net/http"
 
-	"github.com/deluan/rest"
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/model"
-	"github.com/navidrome/navidrome/server"
 )
 
+// addPlaylistFolderRoute registers the playlist organization endpoints:
+//
+//	GET    /playlist/folder                              the whole tree (folders + placements)
+//	POST   /playlist/folder                              create a folder
+//	PUT    /playlist/folder/{id}                         rename / re-parent / re-order a folder
+//	DELETE /playlist/folder/{id}                         delete a folder, releasing its contents
+//	PUT    /playlist/folder/{id}/playlist/{playlistId}   create or re-order one placement
+//	DELETE /playlist/folder/{id}/playlist/{playlistId}   remove one placement (idempotent)
+//	PUT    /playlist/{playlistId}/placements             replace every placement of a playlist
+//
+// {id} accepts the reserved value "root" to address the root of the tree.
+// This must be registered before addPlaylistRoute, which mounts a subrouter on /playlist.
 func (api *Router) addPlaylistFolderRoute(r chi.Router) {
-	constructor := func(ctx context.Context) rest.Repository {
-		return api.ds.PlaylistFolder(ctx)
-	}
-
 	r.Route("/playlist/folder", func(r chi.Router) {
-		r.Get("/", rest.GetAll(constructor))
-		r.Post("/", rest.Post(constructor))
+		r.Get("/", getPlaylistFolderTree(api.ds))
+		r.Post("/", createPlaylistFolder(api.ds))
 
 		r.Route("/{id}", func(r chi.Router) {
-			r.Use(server.URLParamsMiddleware)
-			r.Get("/", getPlaylistFolder(api.ds))
-			r.Put("/", rest.Put(constructor))
-			r.Delete("/", rest.Delete(constructor))
+			r.Put("/", updatePlaylistFolder(api.ds))
+			r.Delete("/", deletePlaylistFolder(api.ds))
 
-			// Membership management
-			r.Post("/playlist/{playlistId}", addPlaylistToFolder(api.ds))
-			r.Delete("/playlist/{playlistId}", removePlaylistFromFolder(api.ds))
+			r.Put("/playlist/{playlistId}", putPlaylistPlacement(api.ds))
+			r.Delete("/playlist/{playlistId}", deletePlaylistPlacement(api.ds))
 		})
 	})
+
+	r.Put("/playlist/{playlistId}/placements", setPlaylistPlacements(api.ds))
 }
 
-type playlistFolderDetailResponse struct {
-	model.PlaylistFolder
-	Children    model.PlaylistFolders `json:"children"`
-	PlaylistIDs []string              `json:"playlistIds"`
-}
-
-func getPlaylistFolder(ds model.DataStore) http.HandlerFunc {
+// getPlaylistFolderTree returns the caller's entire organization in one envelope, using
+// exactly two queries regardless of library size.
+func getPlaylistFolderTree(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		ctx := r.Context()
+		repo := ds.PlaylistFolder(r.Context())
 
-		repo := ds.PlaylistFolder(ctx)
-		folder, err := repo.Get(id)
+		folders, err := repo.GetAll()
 		if err != nil {
-			if errors.Is(err, model.ErrNotFound) {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			respondServerError(w, err)
+			return
+		}
+		placements, err := repo.GetPlacements()
+		if err != nil {
+			respondServerError(w, err)
 			return
 		}
 
-		children, err := repo.GetChildren(id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		response := playlistFolderTreeResponse{
+			FolderAPIVersion: playlistFolderAPIVersion,
+			Folders:          make([]playlistFolderResponse, 0, len(folders)),
+			Placements:       make([]playlistPlacementResponse, 0, len(placements)),
 		}
-
-		playlistIDs, err := repo.GetPlaylistIDs(id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		for _, folder := range folders {
+			response.Folders = append(response.Folders, newPlaylistFolderResponse(folder))
 		}
-
-		resp := playlistFolderDetailResponse{
-			PlaylistFolder: *folder,
-			Children:       children,
-			PlaylistIDs:    playlistIDs,
+		for _, placement := range placements {
+			response.Placements = append(response.Placements, newPlaylistPlacementResponse(placement))
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		respondWithJSON(w, response)
 	}
 }
 
-func addPlaylistToFolder(ds model.DataStore) http.HandlerFunc {
+func createPlaylistFolder(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		folderID := chi.URLParam(r, "id")
-		playlistID := chi.URLParam(r, "playlistId")
-		ctx := r.Context()
+		var request playlistFolderWriteRequest
+		if _, err := decodeJSONBody(r, &request); err != nil {
+			respondBadRequest(w, "invalid request body")
+			return
+		}
+		if request.Name == nil || *request.Name == "" {
+			respondBadRequest(w, "name is required")
+			return
+		}
 
-		repo := ds.PlaylistFolder(ctx)
-		_, err := repo.Get(folderID)
-		if err != nil {
-			if errors.Is(err, model.ErrNotFound) {
-				http.Error(w, "folder not found", http.StatusNotFound)
+		repo := ds.PlaylistFolder(r.Context())
+		folder := model.PlaylistFolder{Name: *request.Name, SortOrder: request.SortOrder}
+		if request.ParentID != nil && *request.ParentID != model.PlaylistFolderRootID {
+			if _, err := repo.Get(*request.ParentID); err != nil {
+				if isNotFoundError(err) {
+					respondNotFound(w)
+					return
+				}
+				respondServerError(w, err)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			folder.ParentID = *request.ParentID
 		}
 
-		err = repo.AddPlaylist(folderID, playlistID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if err := repo.Put(&folder); err != nil {
+			respondServerError(w, err)
 			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		respondWithJSON(w, newPlaylistFolderResponse(folder))
 	}
 }
 
-func removePlaylistFromFolder(ds model.DataStore) http.HandlerFunc {
+// updatePlaylistFolder applies a partial update. Re-parenting a folder under itself or one
+// of its own descendants is rejected with 400.
+func updatePlaylistFolder(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		folderID := chi.URLParam(r, "id")
-		playlistID := chi.URLParam(r, "playlistId")
-		ctx := r.Context()
 
-		repo := ds.PlaylistFolder(ctx)
-		_, err := repo.Get(folderID)
+		var request playlistFolderWriteRequest
+		rawFields, err := decodeJSONBody(r, &request)
 		if err != nil {
-			if errors.Is(err, model.ErrNotFound) {
-				http.Error(w, "folder not found", http.StatusNotFound)
+			respondBadRequest(w, "invalid request body")
+			return
+		}
+
+		repo := ds.PlaylistFolder(r.Context())
+		folders, err := repo.GetAll()
+		if err != nil {
+			respondServerError(w, err)
+			return
+		}
+		folder, found := findFolder(folders, folderID)
+		if !found {
+			respondNotFound(w)
+			return
+		}
+
+		if request.Name != nil {
+			if *request.Name == "" {
+				respondBadRequest(w, "name cannot be empty")
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			folder.Name = *request.Name
+		}
+		if request.ParentID != nil {
+			proposedParentID := *request.ParentID
+			if proposedParentID != model.PlaylistFolderRootID {
+				if _, parentExists := findFolder(folders, proposedParentID); !parentExists {
+					respondNotFound(w)
+					return
+				}
+			}
+			if wouldCreateCycle(folders, folderID, proposedParentID) {
+				respondBadRequest(w, "a folder cannot be moved inside itself or one of its descendants")
+				return
+			}
+			folder.ParentID = proposedParentID
+		}
+		if _, sortOrderSupplied := rawFields["sortOrder"]; sortOrderSupplied {
+			folder.SortOrder = request.SortOrder
 		}
 
-		err = repo.RemovePlaylist(folderID, playlistID)
+		if err = repo.Put(&folder); err != nil {
+			respondServerError(w, err)
+			return
+		}
+		respondWithJSON(w, newPlaylistFolderResponse(folder))
+	}
+}
+
+// deletePlaylistFolder removes the folder, re-parents its children to the deleted folder's
+// parent and releases its placements. Playlists themselves are never touched.
+func deletePlaylistFolder(ds model.DataStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		folderID := chi.URLParam(r, "id")
+
+		err := ds.PlaylistFolder(r.Context()).Delete(folderID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if isNotFoundError(err) {
+				respondNotFound(w)
+				return
+			}
+			respondServerError(w, err)
 			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		respondWithJSON(w, map[string]string{"id": folderID})
 	}
 }

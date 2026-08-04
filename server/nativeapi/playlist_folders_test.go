@@ -2,563 +2,278 @@ package nativeapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
-	"time"
 
-	"github.com/deluan/rest"
-	"github.com/navidrome/navidrome/conf"
-	"github.com/navidrome/navidrome/conf/configtest"
-	"github.com/navidrome/navidrome/consts"
-	"github.com/navidrome/navidrome/core/auth"
 	"github.com/navidrome/navidrome/model"
-	"github.com/navidrome/navidrome/server"
-	"github.com/navidrome/navidrome/tests"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-// --- In-memory mock for PlaylistFolderRepository ---
-
-type mockPlaylistFolderRepo struct {
-	mu          sync.Mutex
-	folders     map[string]*model.PlaylistFolder
-	memberships map[string]map[string]bool // folderID -> set of playlistIDs
-	ownerID     string
-	isAdmin     bool
-	nextID      int
-}
-
-func newMockPlaylistFolderRepo(ownerID string, isAdmin bool) *mockPlaylistFolderRepo {
-	return &mockPlaylistFolderRepo{
-		folders:     make(map[string]*model.PlaylistFolder),
-		memberships: make(map[string]map[string]bool),
-		ownerID:     ownerID,
-		isAdmin:     isAdmin,
-	}
-}
-
-// --- rest.Repository methods ---
-
-func (m *mockPlaylistFolderRepo) Count(_ ...rest.QueryOptions) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	count := int64(0)
-	for _, folder := range m.folders {
-		if m.isAdmin || folder.OwnerID == m.ownerID {
-			count++
-		}
-	}
-	return count, nil
-}
-
-func (m *mockPlaylistFolderRepo) Read(id string) (interface{}, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	folder, ok := m.folders[id]
-	if !ok {
-		return nil, rest.ErrNotFound
-	}
-	if !m.isAdmin && folder.OwnerID != m.ownerID {
-		return nil, rest.ErrNotFound
-	}
-	return folder, nil
-}
-
-func (m *mockPlaylistFolderRepo) ReadAll(_ ...rest.QueryOptions) (interface{}, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result model.PlaylistFolders
-	for _, folder := range m.folders {
-		if m.isAdmin || folder.OwnerID == m.ownerID {
-			result = append(result, *folder)
-		}
-	}
-	if result == nil {
-		result = model.PlaylistFolders{}
-	}
-	return result, nil
-}
-
-func (m *mockPlaylistFolderRepo) EntityName() string {
-	return "playlist_folder"
-}
-
-func (m *mockPlaylistFolderRepo) NewInstance() interface{} {
-	return &model.PlaylistFolder{}
-}
-
-// --- rest.Persistable methods ---
-
-func (m *mockPlaylistFolderRepo) Save(entity interface{}) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	folder := entity.(*model.PlaylistFolder)
-	m.nextID++
-	folder.ID = fmt.Sprintf("folder-%d", m.nextID)
-	folder.OwnerID = m.ownerID
-	now := time.Now()
-	folder.CreatedAt = now
-	folder.UpdatedAt = now
-	stored := *folder
-	m.folders[folder.ID] = &stored
-	return folder.ID, nil
-}
-
-func (m *mockPlaylistFolderRepo) Update(id string, entity interface{}, _ ...string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	existing, ok := m.folders[id]
-	if !ok {
-		return rest.ErrNotFound
-	}
-	if !m.isAdmin && existing.OwnerID != m.ownerID {
-		return rest.ErrNotFound
-	}
-	updated := entity.(*model.PlaylistFolder)
-	existing.Name = updated.Name
-	if updated.ParentID != "" {
-		existing.ParentID = updated.ParentID
-	}
-	existing.UpdatedAt = time.Now()
-	return nil
-}
-
-func (m *mockPlaylistFolderRepo) Delete(id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	folder, ok := m.folders[id]
-	if !ok {
-		return rest.ErrNotFound
-	}
-	if !m.isAdmin && folder.OwnerID != m.ownerID {
-		return rest.ErrNotFound
-	}
-	delete(m.folders, id)
-	delete(m.memberships, id)
-	return nil
-}
-
-// --- model.PlaylistFolderRepository methods ---
-
-func (m *mockPlaylistFolderRepo) Put(folder *model.PlaylistFolder) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if folder.ID == "" {
-		m.nextID++
-		folder.ID = fmt.Sprintf("folder-%d", m.nextID)
-	}
-	now := time.Now()
-	if folder.CreatedAt.IsZero() {
-		folder.CreatedAt = now
-	}
-	folder.UpdatedAt = now
-	stored := *folder
-	m.folders[folder.ID] = &stored
-	return nil
-}
-
-func (m *mockPlaylistFolderRepo) Get(id string) (*model.PlaylistFolder, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	folder, ok := m.folders[id]
-	if !ok {
-		return nil, model.ErrNotFound
-	}
-	if !m.isAdmin && folder.OwnerID != m.ownerID {
-		return nil, model.ErrNotFound
-	}
-	result := *folder
-	return &result, nil
-}
-
-func (m *mockPlaylistFolderRepo) GetAll(_ ...model.QueryOptions) (model.PlaylistFolders, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result model.PlaylistFolders
-	for _, folder := range m.folders {
-		if m.isAdmin || folder.OwnerID == m.ownerID {
-			result = append(result, *folder)
-		}
-	}
-	return result, nil
-}
-
-func (m *mockPlaylistFolderRepo) GetRoots(_ ...model.QueryOptions) (model.PlaylistFolders, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result model.PlaylistFolders
-	for _, folder := range m.folders {
-		if folder.ParentID == "" && (m.isAdmin || folder.OwnerID == m.ownerID) {
-			result = append(result, *folder)
-		}
-	}
-	return result, nil
-}
-
-func (m *mockPlaylistFolderRepo) GetChildren(parentID string) (model.PlaylistFolders, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result model.PlaylistFolders
-	for _, folder := range m.folders {
-		if folder.ParentID == parentID && (m.isAdmin || folder.OwnerID == m.ownerID) {
-			result = append(result, *folder)
-		}
-	}
-	return result, nil
-}
-
-func (m *mockPlaylistFolderRepo) AddPlaylist(folderID, playlistID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.folders[folderID]; !ok {
-		return model.ErrNotFound
-	}
-	if m.memberships[folderID] == nil {
-		m.memberships[folderID] = make(map[string]bool)
-	}
-	m.memberships[folderID][playlistID] = true
-	return nil
-}
-
-func (m *mockPlaylistFolderRepo) RemovePlaylist(folderID, playlistID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.folders[folderID]; !ok {
-		return model.ErrNotFound
-	}
-	if m.memberships[folderID] != nil {
-		delete(m.memberships[folderID], playlistID)
-	}
-	return nil
-}
-
-func (m *mockPlaylistFolderRepo) GetPlaylistFolders(playlistID string) (model.PlaylistFolders, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result model.PlaylistFolders
-	for folderID, playlists := range m.memberships {
-		if playlists[playlistID] {
-			if folder, ok := m.folders[folderID]; ok {
-				result = append(result, *folder)
-			}
-		}
-	}
-	return result, nil
-}
-
-func (m *mockPlaylistFolderRepo) GetPlaylistIDs(folderID string) ([]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result []string
-	if playlists, ok := m.memberships[folderID]; ok {
-		for playlistID := range playlists {
-			result = append(result, playlistID)
-		}
-	}
-	return result, nil
-}
-
-// --- Tests ---
-
 var _ = Describe("Playlist Folder Endpoints", func() {
-	var (
-		router         http.Handler
-		responseWriter *httptest.ResponseRecorder
-		mockFolderRepo *mockPlaylistFolderRepo
-	)
+	var env *playlistFolderTestEnv
 
 	BeforeEach(func() {
-		DeferCleanup(configtest.SetupConfig())
-		conf.Server.SessionTimeout = time.Minute
-
-		userRepo := tests.CreateMockUserRepo()
-		mockFolderRepo = newMockPlaylistFolderRepo("user-1", false)
-
-		dataStore := &tests.MockDataStore{
-			MockedUser:           userRepo,
-			MockedProperty:       &tests.MockedPropertyRepo{},
-			MockedPlaylistFolder: mockFolderRepo,
-		}
-
-		auth.Init(dataStore)
-
-		testUser := model.User{
-			ID:          "user-1",
-			UserName:    "testuser",
-			Name:        "Test User",
-			IsAdmin:     false,
-			NewPassword: "testpass",
-		}
-		err := userRepo.Put(&testUser)
-		Expect(err).ToNot(HaveOccurred())
-
-		nativeRouter := New(dataStore, nil, nil, nil, tests.NewMockLibraryService(), tests.NewMockUserService(), nil, nil, nil)
-		router = server.JWTVerifier(nativeRouter)
-		responseWriter = httptest.NewRecorder()
+		env = setupPlaylistFolderTestEnv()
 	})
 
-	createAuthenticatedRequest := func(method, path string, body ...string) *http.Request {
-		var bodyReader *strings.Reader
-		if len(body) > 0 {
-			bodyReader = strings.NewReader(body[0])
-		} else {
-			bodyReader = strings.NewReader("")
-		}
-		request := httptest.NewRequest(method, path, bodyReader)
-		if len(body) > 0 {
-			request.Header.Set("Content-Type", "application/json")
-		}
-		testUser := model.User{ID: "user-1", UserName: "testuser"}
-		token, err := auth.CreateToken(&testUser)
-		Expect(err).ToNot(HaveOccurred())
-		request.Header.Set(consts.UIAuthorizationHeader, "Bearer "+token)
-		return request
+	decodeTree := func(response *http.Response) playlistFolderTreeResponse {
+		var tree playlistFolderTreeResponse
+		Expect(json.NewDecoder(response.Body).Decode(&tree)).To(Succeed())
+		return tree
 	}
 
-	createUnauthenticatedRequest := func(method, path string) *http.Request {
-		return httptest.NewRequest(method, path, nil)
-	}
+	Describe("GET /playlist/folder (tree envelope)", func() {
+		It("returns the v2 envelope with empty arrays when nothing is filed", func() {
+			recorder := env.call("GET", "/playlist/folder")
+			Expect(recorder.Code).To(Equal(http.StatusOK))
 
-	Describe("CRUD operations", func() {
-		It("POST /playlist/folder creates a folder and returns id", func() {
-			request := createAuthenticatedRequest("POST", "/playlist/folder", `{"name":"Rock"}`)
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
-
-			var response map[string]string
-			err := json.Unmarshal(responseWriter.Body.Bytes(), &response)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(response).To(HaveKey("id"))
-			Expect(response["id"]).To(HavePrefix("folder-"))
+			var raw map[string]any
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &raw)).To(Succeed())
+			Expect(raw).To(HaveKeyWithValue("folderApiVersion", float64(2)))
+			Expect(raw["folders"]).To(BeEmpty())
+			Expect(raw["placements"]).To(BeEmpty())
+			Expect(raw["folders"]).ToNot(BeNil())
+			Expect(raw["placements"]).ToNot(BeNil())
 		})
 
-		It("GET /playlist/folder lists folders", func() {
-			// Seed a folder
-			err := mockFolderRepo.Put(&model.PlaylistFolder{Name: "Jazz", OwnerID: "user-1"})
-			Expect(err).ToNot(HaveOccurred())
+		It("returns folders and placements, including an explicit root placement", func() {
+			parentFolder := env.seedFolder("DJ Sets", "")
+			childFolder := env.seedFolder("2026", parentFolder.ID)
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-summer", FolderID: childFolder.ID, SortOrder: sortOrderPointer(3),
+			})).To(Succeed())
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-road", FolderID: model.PlaylistFolderRootID, SortOrder: sortOrderPointer(2),
+			})).To(Succeed())
 
-			request := createAuthenticatedRequest("GET", "/playlist/folder")
-			router.ServeHTTP(responseWriter, request)
+			recorder := env.call("GET", "/playlist/folder")
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			tree := decodeTree(recorder.Result())
 
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
+			Expect(tree.FolderAPIVersion).To(Equal(2))
+			Expect(tree.Folders).To(HaveLen(2))
+			Expect(tree.Placements).To(HaveLen(2))
 
-			var folders model.PlaylistFolders
-			err = json.Unmarshal(responseWriter.Body.Bytes(), &folders)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(folders).To(HaveLen(1))
-			Expect(folders[0].Name).To(Equal("Jazz"))
+			parentIDByFolderID := map[string]string{}
+			for _, folder := range tree.Folders {
+				parentIDByFolderID[folder.ID] = folder.ParentID
+			}
+			Expect(parentIDByFolderID[childFolder.ID]).To(Equal(parentFolder.ID))
+			Expect(parentIDByFolderID[parentFolder.ID]).To(Equal(""))
+
+			folderIDByPlaylistID := map[string]string{}
+			for _, placement := range tree.Placements {
+				folderIDByPlaylistID[placement.PlaylistID] = placement.FolderID
+			}
+			Expect(folderIDByPlaylistID["playlist-summer"]).To(Equal(childFolder.ID))
+			Expect(folderIDByPlaylistID["playlist-road"]).To(Equal(""))
 		})
 
-		It("GET /playlist/folder/{id} returns folder detail with children and playlistIds", func() {
-			// Seed parent folder
-			parentFolder := &model.PlaylistFolder{Name: "Music", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(parentFolder)
-			Expect(err).ToNot(HaveOccurred())
-			parentID := parentFolder.ID
+		It("omits sortOrder when it is unset", func() {
+			env.seedFolder("Unordered", "")
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{PlaylistID: "playlist-1"})).To(Succeed())
 
-			// Seed child folder
-			childFolder := &model.PlaylistFolder{Name: "Rock", OwnerID: "user-1", ParentID: parentID}
-			err = mockFolderRepo.Put(childFolder)
-			Expect(err).ToNot(HaveOccurred())
-
-			// Add a playlist membership
-			err = mockFolderRepo.AddPlaylist(parentID, "pls-42")
-			Expect(err).ToNot(HaveOccurred())
-
-			request := createAuthenticatedRequest("GET", "/playlist/folder/"+parentID)
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
-
-			var detail playlistFolderDetailResponse
-			err = json.Unmarshal(responseWriter.Body.Bytes(), &detail)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(detail.Name).To(Equal("Music"))
-			Expect(detail.Children).To(HaveLen(1))
-			Expect(detail.Children[0].Name).To(Equal("Rock"))
-			Expect(detail.PlaylistIDs).To(ConsistOf("pls-42"))
+			recorder := env.call("GET", "/playlist/folder")
+			var raw struct {
+				Folders    []map[string]any `json:"folders"`
+				Placements []map[string]any `json:"placements"`
+			}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &raw)).To(Succeed())
+			Expect(raw.Folders[0]).ToNot(HaveKey("sortOrder"))
+			Expect(raw.Folders[0]).To(HaveKey("createdAt"))
+			Expect(raw.Folders[0]).To(HaveKey("updatedAt"))
+			Expect(raw.Placements[0]).ToNot(HaveKey("sortOrder"))
 		})
 
-		It("PUT /playlist/folder/{id} updates the folder name", func() {
-			folder := &model.PlaylistFolder{Name: "Old Name", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(folder)
+		It("does not leak another user's folders or placements", func() {
+			env.seedFolder("Private", "")
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{PlaylistID: "playlist-1"})).To(Succeed())
+			env.folderRepo.switchUser("user-2")
+
+			tree := decodeTree(env.call("GET", "/playlist/folder").Result())
+			Expect(tree.Folders).To(BeEmpty())
+			Expect(tree.Placements).To(BeEmpty())
+		})
+	})
+
+	Describe("POST /playlist/folder", func() {
+		It("creates a folder and returns it", func() {
+			recorder := env.call("POST", "/playlist/folder", `{"name":"Rock","sortOrder":4}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			var created playlistFolderResponse
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &created)).To(Succeed())
+			Expect(created.ID).To(HavePrefix("folder-"))
+			Expect(created.Name).To(Equal("Rock"))
+			Expect(created.ParentID).To(Equal(""))
+			Expect(*created.SortOrder).To(Equal(4))
+
+			stored, err := env.folderRepo.Get(created.ID)
 			Expect(err).ToNot(HaveOccurred())
-			folderID := folder.ID
-
-			request := createAuthenticatedRequest("PUT", "/playlist/folder/"+folderID, `{"name":"New Name"}`)
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
-
-			// Verify the folder was updated in the repo
-			updated, err := mockFolderRepo.Get(folderID)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(updated.Name).To(Equal("New Name"))
+			Expect(stored.Name).To(Equal("Rock"))
 		})
 
-		It("DELETE /playlist/folder/{id} deletes the folder", func() {
-			folder := &model.PlaylistFolder{Name: "Doomed", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(folder)
+		It("creates a nested folder under an existing parent", func() {
+			parentFolder := env.seedFolder("Parent", "")
+
+			recorder := env.call("POST", "/playlist/folder", `{"name":"Child","parentId":"`+parentFolder.ID+`"}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			var created playlistFolderResponse
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &created)).To(Succeed())
+			Expect(created.ParentID).To(Equal(parentFolder.ID))
+			Expect(created.SortOrder).To(BeNil())
+		})
+
+		It("rejects a missing name with 400", func() {
+			Expect(env.call("POST", "/playlist/folder", `{}`).Code).To(Equal(http.StatusBadRequest))
+			Expect(env.call("POST", "/playlist/folder", `{"name":""}`).Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for an unknown parent", func() {
+			recorder := env.call("POST", "/playlist/folder", `{"name":"Orphan","parentId":"nope"}`)
+			Expect(recorder.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("PUT /playlist/folder/{id}", func() {
+		It("renames a folder", func() {
+			folder := env.seedFolder("Old Name", "")
+
+			recorder := env.call("PUT", "/playlist/folder/"+folder.ID, `{"name":"New Name"}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			stored, err := env.folderRepo.Get(folder.ID)
 			Expect(err).ToNot(HaveOccurred())
-			folderID := folder.ID
+			Expect(stored.Name).To(Equal("New Name"))
+		})
 
-			request := createAuthenticatedRequest("DELETE", "/playlist/folder/"+folderID)
-			router.ServeHTTP(responseWriter, request)
+		It("re-parents a folder and can move it back to the root", func() {
+			firstFolder := env.seedFolder("First", "")
+			secondFolder := env.seedFolder("Second", "")
 
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
+			Expect(env.call("PUT", "/playlist/folder/"+secondFolder.ID,
+				`{"parentId":"`+firstFolder.ID+`"}`).Code).To(Equal(http.StatusOK))
+			stored, err := env.folderRepo.Get(secondFolder.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.ParentID).To(Equal(firstFolder.ID))
 
-			// Verify it's gone
-			_, err = mockFolderRepo.Get(folderID)
-			Expect(err).To(Equal(model.ErrNotFound))
+			Expect(env.call("PUT", "/playlist/folder/"+secondFolder.ID, `{"parentId":""}`).Code).To(Equal(http.StatusOK))
+			stored, err = env.folderRepo.Get(secondFolder.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.ParentID).To(Equal(""))
+		})
+
+		It("sets and clears the sort order", func() {
+			folder := env.seedFolder("Sortable", "")
+
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"sortOrder":9}`).Code).To(Equal(http.StatusOK))
+			stored, err := env.folderRepo.Get(folder.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*stored.SortOrder).To(Equal(9))
+
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"sortOrder":null}`).Code).To(Equal(http.StatusOK))
+			stored, err = env.folderRepo.Get(folder.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.SortOrder).To(BeNil())
+
+			// An omitted sortOrder leaves the stored value untouched
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"sortOrder":5}`).Code).To(Equal(http.StatusOK))
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"name":"Renamed"}`).Code).To(Equal(http.StatusOK))
+			stored, err = env.folderRepo.Get(folder.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*stored.SortOrder).To(Equal(5))
+		})
+
+		It("rejects making a folder its own parent with 400", func() {
+			folder := env.seedFolder("Self", "")
+
+			recorder := env.call("PUT", "/playlist/folder/"+folder.ID, `{"parentId":"`+folder.ID+`"}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("rejects moving a folder under its own descendant with 400", func() {
+			grandparent := env.seedFolder("Grandparent", "")
+			parent := env.seedFolder("Parent", grandparent.ID)
+			child := env.seedFolder("Child", parent.ID)
+
+			recorder := env.call("PUT", "/playlist/folder/"+grandparent.ID, `{"parentId":"`+child.ID+`"}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+
+			stored, err := env.folderRepo.Get(grandparent.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.ParentID).To(Equal(""))
+		})
+
+		It("returns 404 for an unknown folder or unknown parent", func() {
+			folder := env.seedFolder("Known", "")
+
+			Expect(env.call("PUT", "/playlist/folder/nope", `{"name":"x"}`).Code).To(Equal(http.StatusNotFound))
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"parentId":"nope"}`).Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 404 when the folder belongs to another user", func() {
+			folder := env.seedFolder("Foreign", "")
+			env.folderRepo.switchUser("user-2")
+
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"name":"x"}`).Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("rejects an empty name with 400", func() {
+			folder := env.seedFolder("Named", "")
+			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"name":""}`).Code).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Describe("DELETE /playlist/folder/{id}", func() {
+		It("deletes the folder, re-parents children and releases placements", func() {
+			grandparent := env.seedFolder("Grandparent", "")
+			parent := env.seedFolder("Parent", grandparent.ID)
+			child := env.seedFolder("Child", parent.ID)
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-1", FolderID: parent.ID,
+			})).To(Succeed())
+			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+				PlaylistID: "playlist-1", FolderID: grandparent.ID,
+			})).To(Succeed())
+
+			recorder := env.call("DELETE", "/playlist/folder/"+parent.ID)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			_, err := env.folderRepo.Get(parent.ID)
+			Expect(err).To(MatchError(model.ErrNotFound))
+
+			storedChild, err := env.folderRepo.Get(child.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(storedChild.ParentID).To(Equal(grandparent.ID))
+
+			placements, err := env.folderRepo.GetPlacements()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(placements).To(HaveLen(1))
+			Expect(placements[0].FolderID).To(Equal(grandparent.ID))
+		})
+
+		It("returns 404 for an unknown or foreign folder", func() {
+			folder := env.seedFolder("Foreign", "")
+			Expect(env.call("DELETE", "/playlist/folder/nope").Code).To(Equal(http.StatusNotFound))
+
+			env.folderRepo.switchUser("user-2")
+			Expect(env.call("DELETE", "/playlist/folder/"+folder.ID).Code).To(Equal(http.StatusNotFound))
 		})
 	})
 
 	Describe("Authentication", func() {
-		It("returns 401 for unauthenticated GET /playlist/folder", func() {
-			request := createUnauthenticatedRequest("GET", "/playlist/folder")
-			router.ServeHTTP(responseWriter, request)
-			Expect(responseWriter.Code).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("returns 401 for unauthenticated POST /playlist/folder", func() {
-			request := createUnauthenticatedRequest("POST", "/playlist/folder")
-			router.ServeHTTP(responseWriter, request)
-			Expect(responseWriter.Code).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("returns 401 for unauthenticated GET /playlist/folder/{id}", func() {
-			request := createUnauthenticatedRequest("GET", "/playlist/folder/some-id")
-			router.ServeHTTP(responseWriter, request)
-			Expect(responseWriter.Code).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("returns 401 for unauthenticated DELETE /playlist/folder/{id}", func() {
-			request := createUnauthenticatedRequest("DELETE", "/playlist/folder/some-id")
-			router.ServeHTTP(responseWriter, request)
-			Expect(responseWriter.Code).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("returns 401 for unauthenticated membership POST", func() {
-			request := createUnauthenticatedRequest("POST", "/playlist/folder/some-id/playlist/pls-1")
-			router.ServeHTTP(responseWriter, request)
-			Expect(responseWriter.Code).To(Equal(http.StatusUnauthorized))
-		})
-	})
-
-	Describe("Membership endpoints", func() {
-		It("POST /playlist/folder/{id}/playlist/{playlistId} adds membership", func() {
-			folder := &model.PlaylistFolder{Name: "Favorites", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(folder)
-			Expect(err).ToNot(HaveOccurred())
-			folderID := folder.ID
-
-			request := createAuthenticatedRequest("POST", "/playlist/folder/"+folderID+"/playlist/pls-1")
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
-
-			var response map[string]string
-			err = json.Unmarshal(responseWriter.Body.Bytes(), &response)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(response["status"]).To(Equal("ok"))
-
-			// Verify membership
-			playlistIDs, err := mockFolderRepo.GetPlaylistIDs(folderID)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(playlistIDs).To(ConsistOf("pls-1"))
-		})
-
-		It("DELETE /playlist/folder/{id}/playlist/{playlistId} removes membership", func() {
-			folder := &model.PlaylistFolder{Name: "Favorites", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(folder)
-			Expect(err).ToNot(HaveOccurred())
-			folderID := folder.ID
-
-			// Add then remove
-			err = mockFolderRepo.AddPlaylist(folderID, "pls-1")
-			Expect(err).ToNot(HaveOccurred())
-
-			request := createAuthenticatedRequest("DELETE", "/playlist/folder/"+folderID+"/playlist/pls-1")
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
-
-			// Verify membership removed
-			playlistIDs, err := mockFolderRepo.GetPlaylistIDs(folderID)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(playlistIDs).To(BeEmpty())
-		})
-
-		It("POST /playlist/folder/nonexistent/playlist/pls-1 returns 404", func() {
-			request := createAuthenticatedRequest("POST", "/playlist/folder/nonexistent/playlist/pls-1")
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusNotFound))
-		})
-	})
-
-	Describe("Owner isolation", func() {
-		It("user-2 cannot see folders owned by user-1", func() {
-			// Create folder as user-1 (the repo's owner)
-			folder := &model.PlaylistFolder{Name: "Secret", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(folder)
-			Expect(err).ToNot(HaveOccurred())
-			folderID := folder.ID
-
-			// Switch repo to user-2 perspective
-			mockFolderRepo.mu.Lock()
-			mockFolderRepo.ownerID = "user-2"
-			mockFolderRepo.mu.Unlock()
-
-			request := createAuthenticatedRequest("GET", "/playlist/folder/"+folderID)
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusNotFound))
-		})
-
-		It("admin can see all folders regardless of owner", func() {
-			// Create folder as user-1
-			folder := &model.PlaylistFolder{Name: "Private", OwnerID: "user-1"}
-			err := mockFolderRepo.Put(folder)
-			Expect(err).ToNot(HaveOccurred())
-			folderID := folder.ID
-
-			// Switch repo to admin perspective with different ownerID
-			mockFolderRepo.mu.Lock()
-			mockFolderRepo.ownerID = "admin-user"
-			mockFolderRepo.isAdmin = true
-			mockFolderRepo.mu.Unlock()
-
-			request := createAuthenticatedRequest("GET", "/playlist/folder/"+folderID)
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusOK))
-
-			var detail playlistFolderDetailResponse
-			err = json.Unmarshal(responseWriter.Body.Bytes(), &detail)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(detail.Name).To(Equal("Private"))
-		})
-	})
-
-	Describe("Edge cases", func() {
-		It("GET /playlist/folder/nonexistent returns 404", func() {
-			request := createAuthenticatedRequest("GET", "/playlist/folder/nonexistent")
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusNotFound))
-		})
-
-		It("DELETE /playlist/folder/nonexistent returns 404", func() {
-			request := createAuthenticatedRequest("DELETE", "/playlist/folder/nonexistent")
-			router.ServeHTTP(responseWriter, request)
-
-			Expect(responseWriter.Code).To(Equal(http.StatusNotFound))
+		It("requires authentication on every folder route", func() {
+			paths := map[string]string{
+				"GET":    "/playlist/folder",
+				"POST":   "/playlist/folder",
+				"PUT":    "/playlist/folder/some-id",
+				"DELETE": "/playlist/folder/some-id",
+			}
+			for method, path := range paths {
+				Expect(env.callUnauthenticated(method, path).Code).To(Equal(http.StatusUnauthorized),
+					"%s %s should require authentication", method, path)
+			}
 		})
 	})
 })

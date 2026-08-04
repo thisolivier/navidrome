@@ -18,34 +18,80 @@ Run all tests:
 go test -tags 'netgo,sqlite_fts5' ./...
 ```
 
-Run playlist folder tests specifically:
+Run the playlist folder packages specifically:
 
 ```bash
-go test -tags 'netgo,sqlite_fts5' -v ./persistence/ --ginkgo.v 2>&1 | grep -i "playlist.folder"
+go test -tags 'netgo,sqlite_fts5' ./persistence/... ./server/nativeapi/... ./model/...
 ```
 
 ## What Was Added
 
-### Playlist Folders (Sprint 038)
+### Playlist Folders v2 (placement model)
 
-Organizational layer for grouping playlists into nested folders. A playlist can belong to multiple folders (many-to-many), and folders can be nested arbitrarily deep.
+A per-user organizational layer over playlists, implementing the semantics of
+`docs/design/opensubsonic-playlist-folders-counterproposal.md` §3 on the native REST API.
 
-**Files added:**
+- Folders nest arbitrarily deep (`parent_id`, `''` = root) and are private to their owner.
+- A **placement** is `(user, playlist, folder-or-root, optional sortOrder)`. A playlist may
+  appear in any number of folders, at most once per folder, and is ordered independently in
+  each. A playlist with no placement is implicitly at the root, unordered.
+- `sortOrder` is client-assigned, stored unnormalized, duplicates allowed; sibling folders
+  and placements share one ordering space. `NULL` means unordered — clients sort, the server
+  only stores.
+- Deleting a folder is a pure schema operation: the folder row goes, its children re-parent
+  to the deleted folder's parent, its placements are released, playlists are never touched.
+- Re-parenting a folder under itself or one of its descendants is rejected with HTTP 400.
+- Playlist responses carry no folder fields — `getPlaylists`/`/api/playlist` are unchanged.
+- Placements follow the playlist's lifecycle: deleting a playlist removes every user's
+  placements of it, and reads filter out any placement whose playlist is missing, so an
+  orphan row can never reach a client.
+- `SetPlacements` writes the new placements before pruning the superseded ones, so a failure
+  part-way through can leave extra placements but never an emptied tree — these repositories
+  run outside a transaction.
+
+**Endpoints** (all under the native API, authenticated, scoped to the calling user):
+
+| Method | Path | Semantics |
+|--------|------|-----------|
+| GET | `/playlist/folder` | v2 envelope: `{folderApiVersion, folders[], placements[]}` — two queries, no N+1 |
+| POST | `/playlist/folder` | Create. Body `{name, parentId?, sortOrder?}` |
+| PUT | `/playlist/folder/{id}` | Partial update `{name?, parentId?, sortOrder?}`; cycle detection |
+| DELETE | `/playlist/folder/{id}` | Delete folder, re-parent children, release placements |
+| PUT | `/playlist/folder/{id}/playlist/{playlistId}` | Create/update one placement. Body `{sortOrder?}` optional |
+| DELETE | `/playlist/folder/{id}/playlist/{playlistId}` | Remove one placement (idempotent) |
+| PUT | `/playlist/{playlistId}/placements` | Replace **all** placements of a playlist. Body `{placements:[{folderId, sortOrder?}]}`; empty list unfiles |
+
+`{id}` accepts the reserved value `root` for the root of the tree; `folderId` `""` (or
+`"root"`) in a body means the same. Unknown and foreign folder IDs are both 404 so trees
+cannot be probed.
+
+**Files:**
 
 | File | Purpose |
 |------|---------|
-| `db/migrations/20260520000000_add_playlist_folders.go` | Migration creating `playlist_folder` and `playlist_folder_membership` tables |
-| `model/playlist_folder.go` | `PlaylistFolder` model struct and `PlaylistFolderRepository` interface |
-| `persistence/playlist_folder_repository.go` | SQLite repository implementation with owner isolation |
-| `persistence/playlist_folder_repository_test.go` | 27 Ginkgo tests covering CRUD, cascades, nesting, many-to-many, and owner isolation |
+| `db/migrations/20260520000000_add_playlist_folders.go` | Creates `playlist_folder` and `playlist_placement` |
+| `model/playlist_folder.go` | `PlaylistFolder`, `PlaylistPlacement`, `PlaylistFolderRepository` |
+| `persistence/playlist_folder_repository.go` | Folder CRUD, owner scoping, releasing delete |
+| `persistence/playlist_placement_repository.go` | Placement upsert / delete / set, user scoping |
+| `persistence/playlist_folder_repository_test.go` | 29 Ginkgo specs (schema, ordering, deletion, lifecycle, isolation) |
+| `server/nativeapi/playlist_folders.go` | Routes, tree envelope, folder handlers |
+| `server/nativeapi/playlist_placements.go` | Placement handlers |
+| `server/nativeapi/playlist_folder_support.go` | Response shapes, request decoding, cycle detection |
+| `server/nativeapi/playlist_folder*_test.go`, `playlist_placements_test.go` | 36 Ginkgo specs + in-memory repository mock |
 
-**Files modified:**
+**Files modified:** `model/datastore.go` (`PlaylistFolder()` on `DataStore`),
+`persistence/persistence.go` (factory + `Resource()` case), `tests/mock_data_store.go`,
+`persistence/playlist_repository.go` (placement cleanup on playlist delete).
 
-| File | Change |
-|------|--------|
-| `model/datastore.go` | Added `PlaylistFolder()` method to `DataStore` interface |
-| `persistence/persistence.go` | Added `PlaylistFolder()` factory and `Resource()` switch case |
-| `tests/mock_data_store.go` | Added mock `PlaylistFolder()` method |
+**Schema note:** foreign keys are declared as intent only. SQLite applies
+`PRAGMA foreign_keys` per connection, so cascades are not relied upon — the repository issues
+explicit deletes — in `playlistFolderRepository.Delete` (folder removal) and
+`playlistRepository.Delete` (playlist removal). `playlist_placement.folder_id` carries no
+foreign key at all, because `''` (root) is not a folder row.
+
+### Song deletion
+
+`DELETE /api/song/{id}` moves a track to the trash. See `server/nativeapi/song_delete.go`.
 
 ## Architecture Notes
 

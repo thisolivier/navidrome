@@ -94,7 +94,24 @@ func (r *playlistRepository) Exists(id string) (bool, error) {
 }
 
 func (r *playlistRepository) Delete(id string) error {
-	return r.delete(And{Eq{"id": id}, r.userFilter()})
+	err := r.delete(And{Eq{"id": id}, r.userFilter()})
+	if err != nil {
+		return err
+	}
+	return r.deletePlacements(id)
+}
+
+// deletePlacements removes every user's folder placements of a playlist that no longer
+// exists. The cleanup is explicit because SQLite only enforces ON DELETE CASCADE on
+// connections that enabled PRAGMA foreign_keys. The NOT EXISTS guard makes it a no-op while
+// the playlist row is still there, which covers a delete blocked by the user filter.
+func (r *playlistRepository) deletePlacements(playlistID string) error {
+	removePlacements := Delete(playlistPlacementTableName).Where(And{
+		Eq{"playlist_id": playlistID},
+		NotExists("playlist", Eq{"playlist.id": playlistID}),
+	})
+	_, err := r.executeSQL(removePlacements)
+	return err
 }
 
 func (r *playlistRepository) Put(p *model.Playlist, cols ...string) error {
@@ -313,59 +330,12 @@ func (r *playlistRepository) Count(options ...rest.QueryOptions) (int64, error) 
 	return r.CountAll(r.parseRestOptions(r.ctx, options...))
 }
 
-func (r *playlistRepository) loadFolderIDs(playlists model.Playlists) error {
-	if len(playlists) == 0 {
-		return nil
-	}
-
-	ids := make([]string, len(playlists))
-	for i, playlist := range playlists {
-		ids[i] = playlist.ID
-	}
-
-	sel := Select("playlist_id", "folder_id").
-		From("playlist_folder_membership").
-		Where(Eq{"playlist_id": ids})
-
-	var memberships []struct {
-		PlaylistID string `db:"playlist_id"`
-		FolderID   string `db:"folder_id"`
-	}
-	err := r.queryAll(sel, &memberships)
-	if err != nil {
-		return err
-	}
-
-	folderMap := make(map[string][]string)
-	for _, membership := range memberships {
-		folderMap[membership.PlaylistID] = append(folderMap[membership.PlaylistID], membership.FolderID)
-	}
-
-	for i := range playlists {
-		playlists[i].FolderIDs = folderMap[playlists[i].ID]
-	}
-
-	return nil
-}
-
 func (r *playlistRepository) Read(id string) (any, error) {
-	playlist, err := r.Get(id)
-	if err != nil {
-		return nil, err
-	}
-	playlists := model.Playlists{*playlist}
-	_ = r.loadFolderIDs(playlists)
-	*playlist = playlists[0]
-	return playlist, nil
+	return r.Get(id)
 }
 
 func (r *playlistRepository) ReadAll(options ...rest.QueryOptions) (any, error) {
-	playlists, err := r.GetAll(r.parseRestOptions(r.ctx, options...))
-	if err != nil {
-		return nil, err
-	}
-	_ = r.loadFolderIDs(playlists)
-	return playlists, nil
+	return r.GetAll(r.parseRestOptions(r.ctx, options...))
 }
 
 func (r *playlistRepository) EntityName() string {
