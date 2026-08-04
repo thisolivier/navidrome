@@ -28,6 +28,7 @@ type MockDataStore struct {
 	MockedScrobble       model.ScrobbleRepository
 	MockedRadio          model.RadioRepository
 	MockedPlugin         model.PluginRepository
+	MockedPlaylistFolder model.PlaylistFolderRepository
 	scrobbleBufferMu     sync.Mutex
 	repoMu               sync.Mutex
 
@@ -126,6 +127,9 @@ func (db *MockDataStore) Playlist(ctx context.Context) model.PlaylistRepository 
 }
 
 func (db *MockDataStore) PlaylistFolder(_ context.Context) model.PlaylistFolderRepository {
+	if db.MockedPlaylistFolder != nil {
+		return db.MockedPlaylistFolder
+	}
 	return nil
 }
 
