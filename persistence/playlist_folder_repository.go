@@ -10,47 +10,54 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// playlistPlacementTableName holds the (user, playlist, folder) placement rows. See
+// playlist_placement_repository.go for the placement half of this repository.
+const playlistPlacementTableName = "playlist_placement"
+
 type playlistFolderRepository struct {
 	sqlRepository
 }
 
 func NewPlaylistFolderRepository(ctx context.Context, db dbx.Builder) model.PlaylistFolderRepository {
-	r := &playlistFolderRepository{}
-	r.ctx = ctx
-	r.db = db
-	r.registerModel(&model.PlaylistFolder{}, nil)
-	return r
+	repository := &playlistFolderRepository{}
+	repository.ctx = ctx
+	repository.db = db
+	repository.registerModel(&model.PlaylistFolder{}, nil)
+	return repository
 }
 
+// currentUserID is the owner of every folder and placement this repository touches.
+func (r *playlistFolderRepository) currentUserID() string {
+	return loggedUser(r.ctx).ID
+}
+
+// ownerFilter scopes folders to the calling user. Folder trees are private per-user
+// organization data, so there is deliberately no administrator bypass here.
 func (r *playlistFolderRepository) ownerFilter() Sqlizer {
-	user := loggedUser(r.ctx)
-	if user.IsAdmin {
-		return And{}
-	}
-	return Eq{"owner_id": user.ID}
+	return Eq{"owner_id": r.currentUserID()}
 }
 
 func (r *playlistFolderRepository) Put(folder *model.PlaylistFolder) error {
 	if folder.OwnerID == "" {
-		folder.OwnerID = loggedUser(r.ctx).ID
+		folder.OwnerID = r.currentUserID()
 	}
 	if folder.ID == "" {
 		folder.CreatedAt = time.Now()
 	}
 	folder.UpdatedAt = time.Now()
 
-	id, err := r.put(folder.ID, folder)
+	newID, err := r.put(folder.ID, folder)
 	if err != nil {
 		return err
 	}
-	folder.ID = id
+	folder.ID = newID
 	return nil
 }
 
 func (r *playlistFolderRepository) Get(id string) (*model.PlaylistFolder, error) {
-	sel := r.newSelect().Columns("*").Where(And{Eq{"id": id}, r.ownerFilter()})
+	selectFolder := r.newSelect().Columns("*").Where(And{Eq{"id": id}, r.ownerFilter()})
 	var folder model.PlaylistFolder
-	err := r.queryOne(sel, &folder)
+	err := r.queryOne(selectFolder, &folder)
 	if err != nil {
 		return nil, err
 	}
@@ -58,19 +65,9 @@ func (r *playlistFolderRepository) Get(id string) (*model.PlaylistFolder, error)
 }
 
 func (r *playlistFolderRepository) GetAll(options ...model.QueryOptions) (model.PlaylistFolders, error) {
-	sel := r.newSelect(options...).Columns("*").Where(r.ownerFilter())
-	var folders model.PlaylistFolders
-	err := r.queryAll(sel, &folders)
-	if err != nil {
-		return nil, err
-	}
-	return folders, nil
-}
-
-func (r *playlistFolderRepository) GetRoots(options ...model.QueryOptions) (model.PlaylistFolders, error) {
-	sel := r.newSelect(options...).Columns("*").Where(And{Eq{"parent_id": ""}, r.ownerFilter()})
-	var folders model.PlaylistFolders
-	err := r.queryAll(sel, &folders)
+	selectFolders := r.newSelect(options...).Columns("*").Where(r.ownerFilter())
+	folders := model.PlaylistFolders{}
+	err := r.queryAll(selectFolders, &folders)
 	if err != nil {
 		return nil, err
 	}
@@ -78,66 +75,43 @@ func (r *playlistFolderRepository) GetRoots(options ...model.QueryOptions) (mode
 }
 
 func (r *playlistFolderRepository) GetChildren(parentID string) (model.PlaylistFolders, error) {
-	sel := r.newSelect().Columns("*").Where(And{Eq{"parent_id": parentID}, r.ownerFilter()})
-	var folders model.PlaylistFolders
-	err := r.queryAll(sel, &folders)
+	selectFolders := r.newSelect().Columns("*").Where(And{Eq{"parent_id": parentID}, r.ownerFilter()})
+	folders := model.PlaylistFolders{}
+	err := r.queryAll(selectFolders, &folders)
 	if err != nil {
 		return nil, err
 	}
 	return folders, nil
 }
 
+// Delete removes a folder as a pure schema operation: children re-parent to the deleted
+// folder's own parent, the placements it held are released, and playlists are untouched.
+// The placement delete is explicit because SQLite only enforces foreign keys on connections
+// that enabled PRAGMA foreign_keys, which we cannot rely on here.
 func (r *playlistFolderRepository) Delete(id string) error {
-	// Promote children to root before deleting
-	promote := Update(r.tableName).Set("parent_id", "").Where(Eq{"parent_id": id})
-	_, err := r.executeSQL(promote)
+	folder, err := r.Get(id)
 	if err != nil {
 		return err
 	}
+
+	reparentChildren := Update(r.tableName).
+		Set("parent_id", folder.ParentID).
+		Set("updated_at", time.Now()).
+		Where(And{Eq{"parent_id": id}, r.ownerFilter()})
+	if _, err = r.executeSQL(reparentChildren); err != nil {
+		return err
+	}
+
+	releasePlacements := Delete(playlistPlacementTableName).Where(Eq{"folder_id": id})
+	if _, err = r.executeSQL(releasePlacements); err != nil {
+		return err
+	}
+
 	return r.delete(And{Eq{"id": id}, r.ownerFilter()})
 }
 
-func (r *playlistFolderRepository) AddPlaylist(folderID, playlistID string) error {
-	ins := Insert("playlist_folder_membership").
-		Columns("folder_id", "playlist_id").
-		Values(folderID, playlistID)
-	_, err := r.executeSQL(ins)
-	return err
-}
-
-func (r *playlistFolderRepository) RemovePlaylist(folderID, playlistID string) error {
-	del := Delete("playlist_folder_membership").
-		Where(And{Eq{"folder_id": folderID}, Eq{"playlist_id": playlistID}})
-	_, err := r.executeSQL(del)
-	return err
-}
-
-func (r *playlistFolderRepository) GetPlaylistFolders(playlistID string) (model.PlaylistFolders, error) {
-	sel := Select(r.tableName + ".*").
-		From(r.tableName).
-		Join("playlist_folder_membership ON playlist_folder_membership.folder_id = " + r.tableName + ".id").
-		Where(And{Eq{"playlist_folder_membership.playlist_id": playlistID}, r.ownerFilter()})
-	var folders model.PlaylistFolders
-	err := r.queryAll(sel, &folders)
-	if err != nil {
-		return nil, err
-	}
-	return folders, nil
-}
-
-func (r *playlistFolderRepository) GetPlaylistIDs(folderID string) ([]string, error) {
-	sel := Select("playlist_id").
-		From("playlist_folder_membership").
-		Where(Eq{"folder_id": folderID})
-	var ids []string
-	err := r.queryAllSlice(sel, &ids)
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
-}
-
-// ResourceRepository (rest.Repository) implementation
+// ResourceRepository (rest.Repository) implementation. No native API route uses these
+// handlers anymore, but DataStore.Resource() still resolves model.PlaylistFolder here.
 
 func (r *playlistFolderRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	return r.count(Select().Where(r.ownerFilter()), r.parseRestOptions(r.ctx, options...))
