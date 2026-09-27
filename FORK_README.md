@@ -1,6 +1,15 @@
 # Navidrome Fork — musicLibrary
 
-Local fork of [Navidrome](https://github.com/navidrome/navidrome) for implementing playlist folders, metadata editing, and song deletion features.
+Local fork of [Navidrome](https://github.com/navidrome/navidrome). The fork currently carries
+exactly ONE feature: **playlist folders v2**. (Song deletion was added and fully reverted —
+`52709fb3`/`e67697ad`; metadata editing was planned but never landed here — it lives in the
+separate metadata-sidecar service.)
+
+**Inventory discipline:** every change to this fork must be recorded in the
+"Upstream contribution ledger" at the bottom of this file, classified by upstreamability,
+at the time it lands. The ledger is what lets us split "ours forever" from "ship to
+Navidrome" when we prepare upstream PRs. The full analysis lives in
+`docs/specs/navidrome-upstream-inventory-2026-09-27.md` in the musicLibrary docs repo.
 
 ## Build
 
@@ -29,7 +38,10 @@ go test -tags 'netgo,sqlite_fts5' ./persistence/... ./server/nativeapi/... ./mod
 ### Playlist Folders v2 (placement model)
 
 A per-user organizational layer over playlists, implementing the semantics of
-`docs/design/opensubsonic-playlist-folders-counterproposal.md` §3 on the native REST API.
+`docs/design/opensubsonic-playlist-folders-counterproposal.md` §3 (in the musicLibrary
+**docs repo**, not this repo; submitted upstream 2026-08-29 as
+DahliaWitt/open-subsonic-api#1, updating opensubsonic/open-subsonic-api#255) on the
+native REST API.
 
 - Folders nest arbitrarily deep (`parent_id`, `''` = root) and are private to their owner.
 - A **placement** is `(user, playlist, folder-or-root, optional sortOrder)`. A playlist may
@@ -82,19 +94,17 @@ cannot be probed.
 | `server/nativeapi/playlist_folder_support.go` | Response shapes, request decoding, cycle detection |
 | `server/nativeapi/playlist_folder*_test.go`, `playlist_placements_test.go` | 36 Ginkgo specs + in-memory repository mock |
 
-**Files modified:** `model/datastore.go` (`PlaylistFolder()` on `DataStore`),
-`persistence/persistence.go` (factory + `Resource()` case), `tests/mock_data_store.go`,
-`persistence/playlist_repository.go` (placement cleanup on playlist delete).
+**Files modified (all five upstream touch points):** `model/datastore.go`
+(`PlaylistFolder()` on `DataStore`), `persistence/persistence.go` (factory + `Resource()`
+case), `server/nativeapi/native_api.go` (`addPlaylistFolderRoute(r)` hook),
+`tests/mock_data_store.go`, `persistence/playlist_repository.go` (placement cleanup on
+playlist delete — the only behavioral change to an upstream method in the fork).
 
 **Schema note:** foreign keys are declared as intent only. SQLite applies
 `PRAGMA foreign_keys` per connection, so cascades are not relied upon — the repository issues
 explicit deletes — in `playlistFolderRepository.Delete` (folder removal) and
 `playlistRepository.Delete` (playlist removal). `playlist_placement.folder_id` carries no
 foreign key at all, because `''` (root) is not a folder row.
-
-### Song deletion
-
-`DELETE /api/song/{id}` moves a track to the trash. See `server/nativeapi/song_delete.go`.
 
 ## Architecture Notes
 
@@ -104,3 +114,23 @@ foreign key at all, because `''` (root) is not a folder row.
 - **Query builder**: Masterminds/Squirrel on PocketBase/dbx on SQLite3 (mattn/go-sqlite3)
 - **Tests**: Ginkgo v2 + Gomega, in-memory SQLite, shared fixtures in `persistence_suite_test.go`
 - **ID generation**: `model/id.NewRandom()` for new entity IDs
+
+## Upstream contribution ledger
+
+One row per fork change, added WHEN THE CHANGE LANDS. Classes:
+**A** = fork-only additive (new files, native API; upstreams as-is) ·
+**B** = touches upstream files (hooks; needs care per rebase) ·
+**C** = Subsonic/OpenSubsonic protocol surface (needs spec buy-in BEFORE a Navidrome PR).
+
+| Change | Commits | Class | Upstream files touched | Upstream vehicle / status |
+|---|---|---|---|---|
+| Playlist folders v2 (placement model, native API, migration `20260520000000`) | `13e82778`…`1c2d1d36` | A + B | `model/datastore.go`, `persistence/persistence.go`, `server/nativeapi/native_api.go`, `tests/mock_data_store.go`, `persistence/playlist_repository.go` (behavioral: Delete prunes placements) | Spec: DahliaWitt/open-subsonic-api#1 (updates opensubsonic#255), submitted 2026-08-29, awaiting response. Navidrome PR: possible without spec (native API only), but blocked on a rebase first — see inventory doc |
+| Song deletion `DELETE /api/song/{id}` | `7bea5b67`+`35fd0ac1`, reverted `e67697ad`+`52709fb3` | — | none (net zero) | Withdrawn; deletion lives in metadata-sidecar |
+
+**Rebase status (2026-09-27):** base `v0.61.2-68-gefe9291d` (2026-05-19); upstream master
+is 343 commits ahead and does NOT compile against our branch (stateless-repository refactor
+#6149, `ResourceRepository` removal, canonical-ID migration #5824). Before ANY rebase, read
+the migration hazards in `docs/specs/navidrome-upstream-inventory-2026-09-27.md` — the
+canonical-ID migration will silently orphan `playlist_placement.playlist_id` and
+`playlist_folder.owner_id` unless our migration is renumbered above `20260922230428` and
+existing deployments get a backfill.
