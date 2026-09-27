@@ -15,55 +15,57 @@ import (
 )
 
 type SQLStore struct {
-	db           dbx.Builder
-	library      func() model.LibraryRepository
-	folder       func() model.FolderRepository
-	album        func() model.AlbumRepository
-	artist       func() model.ArtistRepository
-	mediaFile    func() model.MediaFileRepository
-	genre        func() model.GenreRepository
-	tag          func() model.TagRepository
-	playlist     func() model.PlaylistRepository
-	playQueue    func() model.PlayQueueRepository
-	transcoding  func() model.TranscodingRepository
-	player       func() model.PlayerRepository
-	radio        func() model.RadioRepository
-	share        func() model.ShareRepository
-	property     func() model.PropertyRepository
-	user         func() model.UserRepository
-	userProps    func() model.UserPropsRepository
-	scrobbleBuf  func() model.ScrobbleBufferRepository
-	scrobble     func() model.ScrobbleRepository
-	plugin       func() model.PluginRepository
-	artwork      func() model.ArtworkRepository
-	artworkQueue func() model.ArtworkQueueRepository
+	db             dbx.Builder
+	library        func() model.LibraryRepository
+	folder         func() model.FolderRepository
+	album          func() model.AlbumRepository
+	artist         func() model.ArtistRepository
+	mediaFile      func() model.MediaFileRepository
+	genre          func() model.GenreRepository
+	tag            func() model.TagRepository
+	playlist       func() model.PlaylistRepository
+	playlistFolder func() model.PlaylistFolderRepository
+	playQueue      func() model.PlayQueueRepository
+	transcoding    func() model.TranscodingRepository
+	player         func() model.PlayerRepository
+	radio          func() model.RadioRepository
+	share          func() model.ShareRepository
+	property       func() model.PropertyRepository
+	user           func() model.UserRepository
+	userProps      func() model.UserPropsRepository
+	scrobbleBuf    func() model.ScrobbleBufferRepository
+	scrobble       func() model.ScrobbleRepository
+	plugin         func() model.PluginRepository
+	artwork        func() model.ArtworkRepository
+	artworkQueue   func() model.ArtworkQueueRepository
 }
 
 // Repositories are built on first use, so a transaction store only pays for the ones its block touches.
 func newSQLStore(db dbx.Builder) *SQLStore {
 	return &SQLStore{
-		db:           db,
-		library:      sync.OnceValue(func() model.LibraryRepository { return NewLibraryRepository(db) }),
-		folder:       sync.OnceValue(func() model.FolderRepository { return newFolderRepository(db) }),
-		album:        sync.OnceValue(func() model.AlbumRepository { return NewAlbumRepository(db) }),
-		artist:       sync.OnceValue(func() model.ArtistRepository { return NewArtistRepository(db) }),
-		mediaFile:    sync.OnceValue(func() model.MediaFileRepository { return NewMediaFileRepository(db) }),
-		genre:        sync.OnceValue(func() model.GenreRepository { return NewGenreRepository(db) }),
-		tag:          sync.OnceValue(func() model.TagRepository { return NewTagRepository(db) }),
-		playlist:     sync.OnceValue(func() model.PlaylistRepository { return NewPlaylistRepository(db) }),
-		playQueue:    sync.OnceValue(func() model.PlayQueueRepository { return NewPlayQueueRepository(db) }),
-		transcoding:  sync.OnceValue(func() model.TranscodingRepository { return NewTranscodingRepository(db) }),
-		player:       sync.OnceValue(func() model.PlayerRepository { return NewPlayerRepository(db) }),
-		radio:        sync.OnceValue(func() model.RadioRepository { return NewRadioRepository(db) }),
-		share:        sync.OnceValue(func() model.ShareRepository { return NewShareRepository(db) }),
-		property:     sync.OnceValue(func() model.PropertyRepository { return NewPropertyRepository(db) }),
-		user:         sync.OnceValue(func() model.UserRepository { return NewUserRepository(db) }),
-		userProps:    sync.OnceValue(func() model.UserPropsRepository { return NewUserPropsRepository(db) }),
-		scrobbleBuf:  sync.OnceValue(func() model.ScrobbleBufferRepository { return NewScrobbleBufferRepository(db) }),
-		scrobble:     sync.OnceValue(func() model.ScrobbleRepository { return NewScrobbleRepository(db) }),
-		plugin:       sync.OnceValue(func() model.PluginRepository { return NewPluginRepository(db) }),
-		artwork:      sync.OnceValue(func() model.ArtworkRepository { return NewArtworkRepository(db) }),
-		artworkQueue: sync.OnceValue(func() model.ArtworkQueueRepository { return NewArtworkQueueRepository(db) }),
+		db:             db,
+		library:        sync.OnceValue(func() model.LibraryRepository { return NewLibraryRepository(db) }),
+		folder:         sync.OnceValue(func() model.FolderRepository { return newFolderRepository(db) }),
+		album:          sync.OnceValue(func() model.AlbumRepository { return NewAlbumRepository(db) }),
+		artist:         sync.OnceValue(func() model.ArtistRepository { return NewArtistRepository(db) }),
+		mediaFile:      sync.OnceValue(func() model.MediaFileRepository { return NewMediaFileRepository(db) }),
+		genre:          sync.OnceValue(func() model.GenreRepository { return NewGenreRepository(db) }),
+		tag:            sync.OnceValue(func() model.TagRepository { return NewTagRepository(db) }),
+		playlist:       sync.OnceValue(func() model.PlaylistRepository { return NewPlaylistRepository(db) }),
+		playlistFolder: sync.OnceValue(func() model.PlaylistFolderRepository { return NewPlaylistFolderRepository(db) }),
+		playQueue:      sync.OnceValue(func() model.PlayQueueRepository { return NewPlayQueueRepository(db) }),
+		transcoding:    sync.OnceValue(func() model.TranscodingRepository { return NewTranscodingRepository(db) }),
+		player:         sync.OnceValue(func() model.PlayerRepository { return NewPlayerRepository(db) }),
+		radio:          sync.OnceValue(func() model.RadioRepository { return NewRadioRepository(db) }),
+		share:          sync.OnceValue(func() model.ShareRepository { return NewShareRepository(db) }),
+		property:       sync.OnceValue(func() model.PropertyRepository { return NewPropertyRepository(db) }),
+		user:           sync.OnceValue(func() model.UserRepository { return NewUserRepository(db) }),
+		userProps:      sync.OnceValue(func() model.UserPropsRepository { return NewUserPropsRepository(db) }),
+		scrobbleBuf:    sync.OnceValue(func() model.ScrobbleBufferRepository { return NewScrobbleBufferRepository(db) }),
+		scrobble:       sync.OnceValue(func() model.ScrobbleRepository { return NewScrobbleRepository(db) }),
+		plugin:         sync.OnceValue(func() model.PluginRepository { return NewPluginRepository(db) }),
+		artwork:        sync.OnceValue(func() model.ArtworkRepository { return NewArtworkRepository(db) }),
+		artworkQueue:   sync.OnceValue(func() model.ArtworkQueueRepository { return NewArtworkQueueRepository(db) }),
 	}
 }
 
@@ -105,6 +107,10 @@ func (s *SQLStore) PlayQueue() model.PlayQueueRepository {
 
 func (s *SQLStore) Playlist() model.PlaylistRepository {
 	return s.playlist()
+}
+
+func (s *SQLStore) PlaylistFolder() model.PlaylistFolderRepository {
+	return s.playlistFolder()
 }
 
 func (s *SQLStore) Property() model.PropertyRepository {

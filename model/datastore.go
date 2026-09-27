@@ -24,6 +24,7 @@ type DataStore interface {
 	Genre() GenreRepository
 	Tag() TagRepository
 	Playlist() PlaylistRepository
+	PlaylistFolder() PlaylistFolderRepository
 	PlayQueue() PlayQueueRepository
 	Transcoding() TranscodingRepository
 	Player() PlayerRepository
