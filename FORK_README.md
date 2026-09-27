@@ -1,6 +1,10 @@
 # Navidrome Fork — musicLibrary
 
-Local fork of [Navidrome](https://github.com/navidrome/navidrome) for implementing playlist folders, metadata editing, and song deletion features.
+Local fork of [Navidrome](https://github.com/navidrome/navidrome) carrying one feature: playlist folders v2.
+
+## Rebase status
+
+Rebased onto upstream master `46c43271` ("fix(log): redact LastFM keys and Prometheus password in config dump (#6233)", 2026-09) on branch `folders-v2-rebase`. Adapted to upstream's stateless-repository refactor (#6149): every repository method now takes `ctx context.Context` first and constructors take only the `dbx.Builder`. The generic REST-resource wiring (`ResourceRepository` / `DataStore.Resource()`) no longer exists upstream and was dropped from this feature — the custom routes below are the feature's entire API surface and are unchanged.
 
 ## Build
 
@@ -72,7 +76,8 @@ cannot be probed.
 
 | File | Purpose |
 |------|---------|
-| `db/migrations/20260520000000_add_playlist_folders.go` | Creates `playlist_folder` and `playlist_placement` |
+| `db/migrations/20260928000000_add_playlist_folders.go` | Creates `playlist_folder` and `playlist_placement` (idempotent — pre-rebase deployments already have them under the old version number 20260520000000) |
+| `db/migrations/20260928000001_canonicalize_playlist_folder_ids.go` | Re-encodes folder/placement ids with upstream's canonical id transform (upstream's `20260720015443_uniform_canonical_ids` does not know these fork-only tables) |
 | `model/playlist_folder.go` | `PlaylistFolder`, `PlaylistPlacement`, `PlaylistFolderRepository` |
 | `persistence/playlist_folder_repository.go` | Folder CRUD, owner scoping, releasing delete |
 | `persistence/playlist_placement_repository.go` | Placement upsert / delete / set, user scoping |
@@ -83,18 +88,15 @@ cannot be probed.
 | `server/nativeapi/playlist_folder*_test.go`, `playlist_placements_test.go` | 36 Ginkgo specs + in-memory repository mock |
 
 **Files modified:** `model/datastore.go` (`PlaylistFolder()` on `DataStore`),
-`persistence/persistence.go` (factory + `Resource()` case), `tests/mock_data_store.go`,
-`persistence/playlist_repository.go` (placement cleanup on playlist delete).
+`persistence/persistence.go` (`sync.OnceValue` factory + accessor), `tests/mock_data_store.go`,
+`persistence/playlist_repository.go` (placement cleanup on playlist delete, all ids of the
+variadic `Delete`), `server/nativeapi/native_api.go` (route registration).
 
 **Schema note:** foreign keys are declared as intent only. SQLite applies
 `PRAGMA foreign_keys` per connection, so cascades are not relied upon — the repository issues
 explicit deletes — in `playlistFolderRepository.Delete` (folder removal) and
 `playlistRepository.Delete` (playlist removal). `playlist_placement.folder_id` carries no
 foreign key at all, because `''` (root) is not a folder row.
-
-### Song deletion
-
-`DELETE /api/song/{id}` moves a track to the trash. See `server/nativeapi/song_delete.go`.
 
 ## Architecture Notes
 
