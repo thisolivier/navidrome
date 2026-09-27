@@ -39,10 +39,10 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 		It("returns folders and placements, including an explicit root placement", func() {
 			parentFolder := env.seedFolder("DJ Sets", "")
 			childFolder := env.seedFolder("2026", parentFolder.ID)
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{
 				PlaylistID: "playlist-summer", FolderID: childFolder.ID, SortOrder: sortOrderPointer(3),
 			})).To(Succeed())
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{
 				PlaylistID: "playlist-road", FolderID: model.PlaylistFolderRootID, SortOrder: sortOrderPointer(2),
 			})).To(Succeed())
 
@@ -71,7 +71,7 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 
 		It("omits sortOrder when it is unset", func() {
 			env.seedFolder("Unordered", "")
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{PlaylistID: "playlist-1"})).To(Succeed())
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{PlaylistID: "playlist-1"})).To(Succeed())
 
 			recorder := env.call("GET", "/playlist/folder")
 			var raw struct {
@@ -87,7 +87,7 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 
 		It("does not leak another user's folders or placements", func() {
 			env.seedFolder("Private", "")
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{PlaylistID: "playlist-1"})).To(Succeed())
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{PlaylistID: "playlist-1"})).To(Succeed())
 			env.folderRepo.switchUser("user-2")
 
 			tree := decodeTree(env.call("GET", "/playlist/folder").Result())
@@ -108,7 +108,7 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 			Expect(created.ParentID).To(Equal(""))
 			Expect(*created.SortOrder).To(Equal(4))
 
-			stored, err := env.folderRepo.Get(created.ID)
+			stored, err := env.folderRepo.Get(mockCtx, created.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored.Name).To(Equal("Rock"))
 		})
@@ -143,7 +143,7 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 			recorder := env.call("PUT", "/playlist/folder/"+folder.ID, `{"name":"New Name"}`)
 			Expect(recorder.Code).To(Equal(http.StatusOK))
 
-			stored, err := env.folderRepo.Get(folder.ID)
+			stored, err := env.folderRepo.Get(mockCtx, folder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored.Name).To(Equal("New Name"))
 		})
@@ -154,12 +154,12 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 
 			Expect(env.call("PUT", "/playlist/folder/"+secondFolder.ID,
 				`{"parentId":"`+firstFolder.ID+`"}`).Code).To(Equal(http.StatusOK))
-			stored, err := env.folderRepo.Get(secondFolder.ID)
+			stored, err := env.folderRepo.Get(mockCtx, secondFolder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored.ParentID).To(Equal(firstFolder.ID))
 
 			Expect(env.call("PUT", "/playlist/folder/"+secondFolder.ID, `{"parentId":""}`).Code).To(Equal(http.StatusOK))
-			stored, err = env.folderRepo.Get(secondFolder.ID)
+			stored, err = env.folderRepo.Get(mockCtx, secondFolder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored.ParentID).To(Equal(""))
 		})
@@ -168,19 +168,19 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 			folder := env.seedFolder("Sortable", "")
 
 			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"sortOrder":9}`).Code).To(Equal(http.StatusOK))
-			stored, err := env.folderRepo.Get(folder.ID)
+			stored, err := env.folderRepo.Get(mockCtx, folder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(*stored.SortOrder).To(Equal(9))
 
 			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"sortOrder":null}`).Code).To(Equal(http.StatusOK))
-			stored, err = env.folderRepo.Get(folder.ID)
+			stored, err = env.folderRepo.Get(mockCtx, folder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored.SortOrder).To(BeNil())
 
 			// An omitted sortOrder leaves the stored value untouched
 			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"sortOrder":5}`).Code).To(Equal(http.StatusOK))
 			Expect(env.call("PUT", "/playlist/folder/"+folder.ID, `{"name":"Renamed"}`).Code).To(Equal(http.StatusOK))
-			stored, err = env.folderRepo.Get(folder.ID)
+			stored, err = env.folderRepo.Get(mockCtx, folder.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(*stored.SortOrder).To(Equal(5))
 		})
@@ -200,7 +200,7 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 			recorder := env.call("PUT", "/playlist/folder/"+grandparent.ID, `{"parentId":"`+child.ID+`"}`)
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
 
-			stored, err := env.folderRepo.Get(grandparent.ID)
+			stored, err := env.folderRepo.Get(mockCtx, grandparent.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored.ParentID).To(Equal(""))
 		})
@@ -230,21 +230,21 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 			grandparent := env.seedFolder("Grandparent", "")
 			parent := env.seedFolder("Parent", grandparent.ID)
 			child := env.seedFolder("Child", parent.ID)
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{
 				PlaylistID: "playlist-1", FolderID: parent.ID, SortOrder: sortOrderPointer(5),
 			})).To(Succeed())
 
 			recorder := env.call("DELETE", "/playlist/folder/"+parent.ID)
 			Expect(recorder.Code).To(Equal(http.StatusOK))
 
-			_, err := env.folderRepo.Get(parent.ID)
+			_, err := env.folderRepo.Get(mockCtx, parent.ID)
 			Expect(err).To(MatchError(model.ErrNotFound))
 
-			storedChild, err := env.folderRepo.Get(child.ID)
+			storedChild, err := env.folderRepo.Get(mockCtx, child.ID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(storedChild.ParentID).To(Equal(grandparent.ID))
 
-			placements, err := env.folderRepo.GetPlacements()
+			placements, err := env.folderRepo.GetPlacements(mockCtx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(placements).To(HaveLen(1))
 			Expect(placements[0].FolderID).To(Equal(grandparent.ID))
@@ -254,16 +254,16 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 		It("keeps a placement the parent already had when lifting", func() {
 			grandparent := env.seedFolder("Grandparent", "")
 			parent := env.seedFolder("Parent", grandparent.ID)
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{
 				PlaylistID: "playlist-1", FolderID: grandparent.ID, SortOrder: sortOrderPointer(1),
 			})).To(Succeed())
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{
 				PlaylistID: "playlist-1", FolderID: parent.ID, SortOrder: sortOrderPointer(9),
 			})).To(Succeed())
 
 			Expect(env.call("DELETE", "/playlist/folder/"+parent.ID).Code).To(Equal(http.StatusOK))
 
-			placements, err := env.folderRepo.GetPlacements()
+			placements, err := env.folderRepo.GetPlacements(mockCtx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(placements).To(HaveLen(1))
 			Expect(placements[0].FolderID).To(Equal(grandparent.ID))
@@ -272,13 +272,13 @@ var _ = Describe("Playlist Folder Endpoints", func() {
 
 		It("lifts the placements of a root folder to explicit root placements", func() {
 			folder := env.seedFolder("Root Folder", "")
-			Expect(env.folderRepo.PutPlacement(model.PlaylistPlacement{
+			Expect(env.folderRepo.PutPlacement(mockCtx, model.PlaylistPlacement{
 				PlaylistID: "playlist-1", FolderID: folder.ID, SortOrder: sortOrderPointer(2),
 			})).To(Succeed())
 
 			Expect(env.call("DELETE", "/playlist/folder/"+folder.ID).Code).To(Equal(http.StatusOK))
 
-			placements, err := env.folderRepo.GetPlacements()
+			placements, err := env.folderRepo.GetPlacements(mockCtx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(placements).To(HaveLen(1))
 			Expect(placements[0].FolderID).To(Equal(model.PlaylistFolderRootID))

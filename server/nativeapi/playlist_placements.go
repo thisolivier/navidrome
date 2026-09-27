@@ -1,6 +1,7 @@
 package nativeapi
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -21,8 +22,9 @@ func putPlaylistPlacement(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		repo := ds.PlaylistFolder(r.Context())
-		if !folderExistsForUser(w, repo, folderID) {
+		ctx := r.Context()
+		repo := ds.PlaylistFolder()
+		if !folderExistsForUser(ctx, w, repo, folderID) {
 			return
 		}
 
@@ -31,7 +33,7 @@ func putPlaylistPlacement(ds model.DataStore) http.HandlerFunc {
 			FolderID:   folderID,
 			SortOrder:  request.SortOrder,
 		}
-		if err := repo.PutPlacement(placement); err != nil {
+		if err := repo.PutPlacement(ctx, placement); err != nil {
 			respondServerError(w, err)
 			return
 		}
@@ -45,12 +47,13 @@ func deletePlaylistPlacement(ds model.DataStore) http.HandlerFunc {
 		folderID := resolveFolderIDFromPath(chi.URLParam(r, "id"))
 		playlistID := chi.URLParam(r, "playlistId")
 
-		repo := ds.PlaylistFolder(r.Context())
-		if !folderExistsForUser(w, repo, folderID) {
+		ctx := r.Context()
+		repo := ds.PlaylistFolder()
+		if !folderExistsForUser(ctx, w, repo, folderID) {
 			return
 		}
 
-		if err := repo.DeletePlacement(playlistID, folderID); err != nil {
+		if err := repo.DeletePlacement(ctx, playlistID, folderID); err != nil {
 			respondServerError(w, err)
 			return
 		}
@@ -78,8 +81,9 @@ func setPlaylistPlacements(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		repo := ds.PlaylistFolder(r.Context())
-		folders, err := repo.GetAll()
+		ctx := r.Context()
+		repo := ds.PlaylistFolder()
+		folders, err := repo.GetAll(ctx)
 		if err != nil {
 			respondServerError(w, err)
 			return
@@ -101,7 +105,7 @@ func setPlaylistPlacements(ds model.DataStore) http.HandlerFunc {
 			})
 		}
 
-		if err = repo.SetPlacements(playlistID, placements); err != nil {
+		if err = repo.SetPlacements(ctx, playlistID, placements); err != nil {
 			respondServerError(w, err)
 			return
 		}
@@ -120,11 +124,11 @@ func setPlaylistPlacements(ds model.DataStore) http.HandlerFunc {
 // folderExistsForUser guards placement writes: an unknown or foreign folder is a 404. The
 // root folder always exists. It writes the error response itself and reports whether the
 // caller should continue.
-func folderExistsForUser(w http.ResponseWriter, repo model.PlaylistFolderRepository, folderID string) bool {
+func folderExistsForUser(ctx context.Context, w http.ResponseWriter, repo model.PlaylistFolderRepository, folderID string) bool {
 	if folderID == model.PlaylistFolderRootID {
 		return true
 	}
-	if _, err := repo.Get(folderID); err != nil {
+	if _, err := repo.Get(ctx, folderID); err != nil {
 		if isNotFoundError(err) {
 			respondNotFound(w)
 			return false

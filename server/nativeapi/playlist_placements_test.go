@@ -17,7 +17,7 @@ var _ = Describe("Playlist Placement Endpoints", func() {
 	})
 
 	placementsForPlaylist := func(playlistID string) model.PlaylistPlacements {
-		allPlacements, err := env.folderRepo.GetPlacements()
+		allPlacements, err := env.folderRepo.GetPlacements(mockCtx)
 		Expect(err).ToNot(HaveOccurred())
 		matching := model.PlaylistPlacements{}
 		for _, placement := range allPlacements {

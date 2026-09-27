@@ -1,6 +1,7 @@
 package nativeapi
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/navidrome/navidrome/conf/configtest"
 	"github.com/navidrome/navidrome/consts"
 	"github.com/navidrome/navidrome/core/auth"
+	"github.com/navidrome/navidrome/core/playlists"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/server"
 	"github.com/navidrome/navidrome/tests"
@@ -18,6 +20,10 @@ import (
 )
 
 const testUserID = "user-1"
+
+// mockCtx feeds the ctx-first repository interface when tests drive the in-memory mock
+// directly; the mock scopes by its own currentUserID and ignores the context.
+var mockCtx = context.Background()
 
 // playlistFolderTestEnv wires the native API router to an in-memory folder repository.
 type playlistFolderTestEnv struct {
@@ -29,6 +35,7 @@ type playlistFolderTestEnv struct {
 func setupPlaylistFolderTestEnv() *playlistFolderTestEnv {
 	DeferCleanup(configtest.SetupConfig())
 	conf.Server.SessionTimeout = time.Minute
+	conf.Server.EnableSharing = false // the env wires no share service
 
 	userRepo := tests.CreateMockUserRepo()
 	folderRepo := newMockPlaylistFolderRepo(testUserID)
@@ -47,9 +54,9 @@ func setupPlaylistFolderTestEnv() *playlistFolderTestEnv {
 		IsAdmin:     false,
 		NewPassword: "testpass",
 	}
-	Expect(userRepo.Put(&testUser)).To(Succeed())
+	Expect(userRepo.Put(mockCtx, &testUser)).To(Succeed())
 
-	nativeRouter := New(dataStore, nil, nil, nil, tests.NewMockLibraryService(), tests.NewMockUserService(), nil, nil, nil)
+	nativeRouter := New(dataStore, nil, playlists.NewPlaylists(dataStore, nil), nil, tests.NewMockLibraryService(), tests.NewMockUserService(), nil, nil, nil, nil, nil)
 	return &playlistFolderTestEnv{
 		router:         server.JWTVerifier(nativeRouter),
 		folderRepo:     folderRepo,
@@ -98,7 +105,7 @@ func (env *playlistFolderTestEnv) callUnauthenticated(method, path string) *http
 // seedFolder inserts a folder owned by the test user directly in the repository.
 func (env *playlistFolderTestEnv) seedFolder(name, parentID string) *model.PlaylistFolder {
 	folder := &model.PlaylistFolder{Name: name, ParentID: parentID, OwnerID: testUserID}
-	Expect(env.folderRepo.Put(folder)).To(Succeed())
+	Expect(env.folderRepo.Put(mockCtx, folder)).To(Succeed())
 	return folder
 }
 

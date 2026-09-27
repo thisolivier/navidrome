@@ -40,14 +40,15 @@ func (api *Router) addPlaylistFolderRoute(r chi.Router) {
 // exactly two queries regardless of library size.
 func getPlaylistFolderTree(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo := ds.PlaylistFolder(r.Context())
+		ctx := r.Context()
+		repo := ds.PlaylistFolder()
 
-		folders, err := repo.GetAll()
+		folders, err := repo.GetAll(ctx)
 		if err != nil {
 			respondServerError(w, err)
 			return
 		}
-		placements, err := repo.GetPlacements()
+		placements, err := repo.GetPlacements(ctx)
 		if err != nil {
 			respondServerError(w, err)
 			return
@@ -80,10 +81,11 @@ func createPlaylistFolder(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		repo := ds.PlaylistFolder(r.Context())
+		ctx := r.Context()
+		repo := ds.PlaylistFolder()
 		folder := model.PlaylistFolder{Name: *request.Name, SortOrder: request.SortOrder}
 		if request.ParentID != nil && *request.ParentID != model.PlaylistFolderRootID {
-			if _, err := repo.Get(*request.ParentID); err != nil {
+			if _, err := repo.Get(ctx, *request.ParentID); err != nil {
 				if isNotFoundError(err) {
 					respondNotFound(w)
 					return
@@ -94,7 +96,7 @@ func createPlaylistFolder(ds model.DataStore) http.HandlerFunc {
 			folder.ParentID = *request.ParentID
 		}
 
-		if err := repo.Put(&folder); err != nil {
+		if err := repo.Put(ctx, &folder); err != nil {
 			respondServerError(w, err)
 			return
 		}
@@ -115,8 +117,9 @@ func updatePlaylistFolder(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		repo := ds.PlaylistFolder(r.Context())
-		folders, err := repo.GetAll()
+		ctx := r.Context()
+		repo := ds.PlaylistFolder()
+		folders, err := repo.GetAll(ctx)
 		if err != nil {
 			respondServerError(w, err)
 			return
@@ -152,7 +155,7 @@ func updatePlaylistFolder(ds model.DataStore) http.HandlerFunc {
 			folder.SortOrder = request.SortOrder
 		}
 
-		if err = repo.Put(&folder); err != nil {
+		if err = repo.Put(ctx, &folder); err != nil {
 			respondServerError(w, err)
 			return
 		}
@@ -166,7 +169,7 @@ func deletePlaylistFolder(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		folderID := chi.URLParam(r, "id")
 
-		err := ds.PlaylistFolder(r.Context()).Delete(folderID)
+		err := ds.PlaylistFolder().Delete(r.Context(), folderID)
 		if err != nil {
 			if isNotFoundError(err) {
 				respondNotFound(w)

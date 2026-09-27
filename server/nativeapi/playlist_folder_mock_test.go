@@ -1,11 +1,11 @@
 package nativeapi
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/deluan/rest"
 	"github.com/navidrome/navidrome/model"
 )
 
@@ -44,7 +44,7 @@ func (m *mockPlaylistFolderRepo) visibleFolder(id string) (*model.PlaylistFolder
 
 // --- model.PlaylistFolderRepository: folders ---
 
-func (m *mockPlaylistFolderRepo) Put(folder *model.PlaylistFolder) error {
+func (m *mockPlaylistFolderRepo) Put(_ context.Context, folder *model.PlaylistFolder) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if folder.OwnerID == "" {
@@ -61,7 +61,7 @@ func (m *mockPlaylistFolderRepo) Put(folder *model.PlaylistFolder) error {
 	return nil
 }
 
-func (m *mockPlaylistFolderRepo) Get(id string) (*model.PlaylistFolder, error) {
+func (m *mockPlaylistFolderRepo) Get(_ context.Context, id string) (*model.PlaylistFolder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	folder, visible := m.visibleFolder(id)
@@ -72,7 +72,7 @@ func (m *mockPlaylistFolderRepo) Get(id string) (*model.PlaylistFolder, error) {
 	return &result, nil
 }
 
-func (m *mockPlaylistFolderRepo) GetAll(_ ...model.QueryOptions) (model.PlaylistFolders, error) {
+func (m *mockPlaylistFolderRepo) GetAll(_ context.Context, _ ...model.QueryOptions) (model.PlaylistFolders, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	folders := model.PlaylistFolders{}
@@ -84,7 +84,7 @@ func (m *mockPlaylistFolderRepo) GetAll(_ ...model.QueryOptions) (model.Playlist
 	return folders, nil
 }
 
-func (m *mockPlaylistFolderRepo) GetChildren(parentID string) (model.PlaylistFolders, error) {
+func (m *mockPlaylistFolderRepo) GetChildren(_ context.Context, parentID string) (model.PlaylistFolders, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	children := model.PlaylistFolders{}
@@ -96,7 +96,7 @@ func (m *mockPlaylistFolderRepo) GetChildren(parentID string) (model.PlaylistFol
 	return children, nil
 }
 
-func (m *mockPlaylistFolderRepo) Delete(id string) error {
+func (m *mockPlaylistFolderRepo) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	folder, visible := m.visibleFolder(id)
@@ -145,7 +145,7 @@ func promotePlacementsOf(placements []model.PlaylistPlacement, folderID, parentI
 
 // --- model.PlaylistFolderRepository: placements ---
 
-func (m *mockPlaylistFolderRepo) GetPlacements() (model.PlaylistPlacements, error) {
+func (m *mockPlaylistFolderRepo) GetPlacements(_ context.Context) (model.PlaylistPlacements, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	placements := model.PlaylistPlacements{}
@@ -157,7 +157,7 @@ func (m *mockPlaylistFolderRepo) GetPlacements() (model.PlaylistPlacements, erro
 	return placements, nil
 }
 
-func (m *mockPlaylistFolderRepo) PutPlacement(placement model.PlaylistPlacement) error {
+func (m *mockPlaylistFolderRepo) PutPlacement(ctx context.Context, placement model.PlaylistPlacement) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	placement.UserID = m.currentUserID
@@ -173,7 +173,7 @@ func (m *mockPlaylistFolderRepo) PutPlacement(placement model.PlaylistPlacement)
 	return nil
 }
 
-func (m *mockPlaylistFolderRepo) DeletePlacement(playlistID, folderID string) error {
+func (m *mockPlaylistFolderRepo) DeletePlacement(_ context.Context, playlistID, folderID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	remaining := m.placements[:0]
@@ -189,7 +189,7 @@ func (m *mockPlaylistFolderRepo) DeletePlacement(playlistID, folderID string) er
 	return nil
 }
 
-func (m *mockPlaylistFolderRepo) SetPlacements(playlistID string, placements model.PlaylistPlacements) error {
+func (m *mockPlaylistFolderRepo) SetPlacements(ctx context.Context, playlistID string, placements model.PlaylistPlacements) error {
 	m.mu.Lock()
 	remaining := m.placements[:0]
 	for _, placement := range m.placements {
@@ -202,30 +202,11 @@ func (m *mockPlaylistFolderRepo) SetPlacements(playlistID string, placements mod
 
 	for _, placement := range placements {
 		placement.PlaylistID = playlistID
-		if err := m.PutPlacement(placement); err != nil {
+		if err := m.PutPlacement(ctx, placement); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-
-// --- model.ResourceRepository (unused by the routes, required by the interface) ---
-
-func (m *mockPlaylistFolderRepo) Count(_ ...rest.QueryOptions) (int64, error) {
-	folders, _ := m.GetAll()
-	return int64(len(folders)), nil
-}
-
-func (m *mockPlaylistFolderRepo) Read(id string) (any, error) {
-	return m.Get(id)
-}
-
-func (m *mockPlaylistFolderRepo) ReadAll(_ ...rest.QueryOptions) (any, error) {
-	return m.GetAll()
-}
-
-func (m *mockPlaylistFolderRepo) EntityName() string { return "playlist_folder" }
-
-func (m *mockPlaylistFolderRepo) NewInstance() any { return &model.PlaylistFolder{} }
 
 var _ model.PlaylistFolderRepository = (*mockPlaylistFolderRepo)(nil)
